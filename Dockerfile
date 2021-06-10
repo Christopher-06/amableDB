@@ -31,4 +31,5 @@ RUN make
 # Create dataFolder
 RUN mkdir /home/databaseData
 
-ENTRYPOINT ["/usr/build/amableDB", "-dataPath /home/databaseData"]
+EXPOSE 3399
+ENTRYPOINT ["./amableDB", "--dataPath", "/home/databaseData/"]
