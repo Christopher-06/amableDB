@@ -82,7 +82,7 @@ void group_storage_t::getDocuments(std::vector<size_t>* ids, std::vector<nlohman
 	this->locked = false;
 }
 
-int group_storage_t::countDocuments()
+size_t group_storage_t::countDocuments()
 {
 	return this->idPositions.size() + this->newDocuments.size();
 }
@@ -92,7 +92,7 @@ void group_storage_t::insertDocument(const nlohmann::json& document)
 	this->newDocuments[document["id"].get<size_t>()] = document;
 }
 
-void group_storage_t::doFuncOnAllDocuments(std::function<void(nlohmann::json)> func)
+void group_storage_t::doFuncOnAllDocuments(std::function<void(nlohmann::json&)> func)
 {
 	this->save(); // write all unsaved/edited things down
 
@@ -108,7 +108,8 @@ void group_storage_t::doFuncOnAllDocuments(std::function<void(nlohmann::json)> f
 			continue;
 		
 		// Fire func on this document
-		func(nlohmann::json::parse(line));	
+		nlohmann::json lineDocument = nlohmann::json::parse(line);
+		func(lineDocument);
 	}
 	
 
@@ -121,6 +122,9 @@ void group_storage_t::save()
 	// Open a new file in append mode and write everything inside
 	// Then set it as storagePath and delete old one
 	// The new Filename is the hashed (old) filename
+
+	if (!this->newDocuments.size() && !this->editedDocuments.size())
+		return; // Nothing was changed
 
 	while (this->locked) // Wait to lock storage file
 		std::this_thread::sleep_for(std::chrono::milliseconds(5));

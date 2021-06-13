@@ -22,10 +22,10 @@ public:
 	group_storage_t(std::string storagePath);
 	bool savedHere(size_t);
 	void getDocuments(std::vector<size_t>* ids, std::vector< nlohmann::json>& documents, bool allDocuments = false);
-	int countDocuments();
+	size_t countDocuments();
 	void insertDocument(const nlohmann::json& document);
 
-	void doFuncOnAllDocuments(std::function<void(nlohmann::json)> func);
+	void doFuncOnAllDocuments(std::function<void(nlohmann::json&)> func);
 	void save();
 };
 

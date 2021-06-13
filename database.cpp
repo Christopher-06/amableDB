@@ -9,6 +9,7 @@
 #include <random>
 
 #include <nlohmann/json.hpp>
+#include "hnswlib.h"
 
 #include "sha256.h"
 #include "main.h"
@@ -41,7 +42,8 @@ void loadCollection(std::string collectionPath) {
 		for (const auto& indexMeta : metadata["indexes"]) {
 			// Parse JSON Object to Index
 			const std::string indexName = indexMeta["name"].get<std::string>();
-			DbIndex::Iindex_t* index = DbIndex::loadIndexFromJSON(nlohmann::json(indexMeta));
+			const nlohmann::json indexObject = nlohmann::json(indexMeta);
+			DbIndex::Iindex_t* index = DbIndex::loadIndexFromJSON(indexObject);
 
 			// Set Index in collection
 			if (index != nullptr)
@@ -140,6 +142,31 @@ size_t collection_t::insertDocument(nlohmann::json& document)
 	return document["id"].get<size_t>();
 }
 
+std::set<std::tuple<std::string, DbIndex::IndexType, DbIndex::Iindex_t*>> collection_t::getIndexedKeys()
+{
+	std::set<std::tuple<std::string, DbIndex::IndexType, DbIndex::Iindex_t*>> list;
+
+	// Get all Keys from all Indexes
+	for (const auto& index : this->indexes) {
+		const auto type = index.second->getType();
+
+		for(const auto& keyName : index.second->getIncludedKeys())
+			list.insert(std::tuple<std::string, DbIndex::IndexType, DbIndex::Iindex_t*>(keyName, type, index.second));
+	}
+		
+	return list;
+}
+
+size_t collection_t::countDocuments()
+{
+	size_t total = 0;
+
+	for (const auto& storage : this->storage)
+		total += storage->countDocuments();
+
+	return total;
+}
+
 
 //	*** General Index ***
 
@@ -166,7 +193,8 @@ std::vector<std::vector<size_t>> DbIndex::KeyValueIndex_t::perform(std::vector<s
 			result.push_back(this->data[sha256(value)]);
 		}
 		else {
-			result.push_back(this->data[value]);
+			auto obj = nlohmann::json::parse(value);
+			result.push_back(this->data[obj]);
 		}
 	}
 
@@ -198,9 +226,9 @@ void DbIndex::KeyValueIndex_t::buildIt(std::vector<group_storage_t*> storage)
 		storagePtr->doFuncOnAllDocuments([this](nlohmann::json& document) {
 			if (document.contains(this->perfomedOnKey)) {
 				// document contains the key
-				std::string dataKey = document[this->perfomedOnKey].get<std::string>();
+				nlohmann::json dataKey = document[this->perfomedOnKey];
 				if (this->isHashedIndex)
-					dataKey = sha256(dataKey);
+					dataKey = sha256(dataKey.dump());
 
 				// Add dataKey to index-data
 				if (this->data.count(dataKey))
@@ -307,9 +335,112 @@ void DbIndex::MultipleKeyValueIndex_t::buildIt(std::vector<group_storage_t*> sto
 		).count();
 }
 
+//	*** Knn Index ***
+DbIndex::KnnIndex_t::KnnIndex_t(std::string keyName, size_t space)
+{
+	this->perfomedOnKey = keyName;
+	this->index = nullptr;
+	this->spaceValue = space;
+	this->space = hnswlib::L2Space(space);
+	this->createdAt = 0;
+	this->isInWork = false;
+}
+
+std::vector<std::vector<size_t>> DbIndex::KnnIndex_t::perform(std::vector<std::vector<float>>& query, size_t limit)
+{
+	std::vector<std::vector<size_t>> results;
+	results.reserve(query.size());
+
+	std::vector<size_t> queryR (limit);
+	for (const auto& value : query) {
+		// Calculate K-Nearest-Neighbours
+		auto gd = this->index->searchKnn(value.data(), limit);
+		int gdIndex = gd.size() - 1;
+
+		// Reverse and remove Distance at the same time
+		while (!gd.empty()) {
+			const auto [rDis, rID] = gd.top();
+			queryR[gdIndex] = rID;
+
+			gd.pop();
+			--gdIndex;
+		}
+
+		results.push_back(queryR);
+	}
+
+	return results;
+}
+
+std::priority_queue<std::pair<float, hnswlib::labeltype>> DbIndex::KnnIndex_t::perform(const std::vector<float>& query, size_t limit) {
+	return this->index->searchKnn(query.data(), limit);
+}
+
+nlohmann::json DbIndex::KnnIndex_t::saveMetadata()
+{
+	nlohmann::json metadata;
+
+	metadata["type"] = DbIndex::IndexType::KnnIndex;
+	metadata["keyName"] = this->perfomedOnKey;
+	metadata["space"] = this->spaceValue;
+
+	return metadata;
+}
+
+std::set<std::string> DbIndex::KnnIndex_t::getIncludedKeys()
+{
+	return { this->perfomedOnKey };
+}
+
+void DbIndex::KnnIndex_t::buildIt(std::vector<group_storage_t*> storage)
+{
+	this->isInWork = true;
+
+	size_t total = 0; // Get total docs
+	for (const auto& storagePtr : storage)
+		total += storagePtr->countDocuments();
+	
+	delete this->index;
+	this->index = new hnswlib::HierarchicalNSW<float>(&(this->space), total);
+
+	// Get all documents and add them into the Index
+	std::vector<float> data(this->spaceValue);
+	for (const auto& storagePtr : storage) {
+		storagePtr->doFuncOnAllDocuments([this, &data](nlohmann::json& document) {
+			if (document.contains(this->perfomedOnKey)) {
+				// document contains the key 
+
+				// Build data-vector
+				auto it = data.begin();
+				for (const auto& value : document[this->perfomedOnKey].get<std::vector<float>>()) {
+					*it = value;
+					++it;
+
+					if (it == data.end())
+						break;
+				}
+
+				// Adding Padding
+				while (it != data.end()) {
+					*it = 0;
+					++it;
+				}
+
+				hnswlib::labeltype _id = document["id"].get<size_t>();
+				this->index->addPoint(data.data(), _id);
+			}
+		});
+	}
+
+	this->isInWork = false;
+	this->createdAt = std::chrono::duration_cast<std::chrono::seconds>(
+		std::chrono::system_clock::now().time_since_epoch() // Since 1970
+		).count();
+}
 
 
-DbIndex::Iindex_t* DbIndex::loadIndexFromJSON(nlohmann::json& metadata)
+
+DbIndex::Iindex_t* DbIndex::loadIndexFromJSON(const nlohmann::json& metadata)
 {
 	DbIndex::Iindex_t* index = nullptr;
 	const std::string indexName = metadata["name"].get<std::string>();
@@ -321,6 +452,9 @@ DbIndex::Iindex_t* DbIndex::loadIndexFromJSON(nlohmann::json& metadata)
 		break;
 	case DbIndex::IndexType::MultipleKeyValueIndex:
 		index = new DbIndex::MultipleKeyValueIndex_t(metadata["keyNames"], metadata["isFullHashedIndex"].get<bool>(), metadata["isHashedIndex"]);
+		break;
+	case DbIndex::IndexType::KnnIndex:
+		index = new DbIndex::KnnIndex_t(metadata["keyName"].get<std::string>(), metadata["space"].get<size_t>());
 		break;
 	}
 

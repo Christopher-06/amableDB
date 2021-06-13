@@ -6,16 +6,17 @@
 #include <map>
 #include <set>
 
-
 #include <nlohmann/json.hpp>
 
+#include "hnswlib.h"
 #include "storage.h"
 
 
 namespace DbIndex {
 	enum IndexType {
 		KeyValueIndex, 
-		MultipleKeyValueIndex
+		MultipleKeyValueIndex,
+		KnnIndex
 	};
 
 	class Iindex_t { // Base Class
@@ -26,13 +27,14 @@ namespace DbIndex {
 		virtual void buildIt(std::vector<group_storage_t*> storage) = 0;
 		virtual std::set<std::string> getIncludedKeys() = 0;
 		virtual nlohmann::json saveMetadata() = 0;
+		virtual DbIndex::IndexType getType() = 0;
 	};
 
 	class KeyValueIndex_t : public Iindex_t {
 	public:
 		std::string perfomedOnKey;
 		bool isHashedIndex;
-		std::map<std::string, std::vector<size_t>> data; // 1. hash of value 2. id of documents
+		std::map<nlohmann::json, std::vector<size_t>> data; // 1. hash of value 2. id of documents
 
 		KeyValueIndex_t(std::string keyName, bool isHashedIndex = false);
 		std::vector<std::vector<size_t>> perform(std::vector<std::string>& values);
@@ -40,6 +42,7 @@ namespace DbIndex {
 		nlohmann::json saveMetadata();
 		std::set<std::string> getIncludedKeys();
 		void buildIt(std::vector<group_storage_t*> storage);
+		DbIndex::IndexType getType() { return DbIndex::IndexType::KeyValueIndex; };
 	};
 
 	class MultipleKeyValueIndex_t : public Iindex_t {
@@ -56,9 +59,29 @@ namespace DbIndex {
 		nlohmann::json saveMetadata();
 		std::set<std::string> getIncludedKeys();
 		void buildIt(std::vector<group_storage_t*> storage);
+		DbIndex::IndexType getType() { return DbIndex::IndexType::MultipleKeyValueIndex; };
 	};
 
-	Iindex_t* loadIndexFromJSON(nlohmann::json& metadata);
+	class KnnIndex_t : public Iindex_t {
+	private:
+		hnswlib::AlgorithmInterface<float>* index;
+		hnswlib::L2Space space = hnswlib::L2Space(0);
+		size_t spaceValue;
+		std::string perfomedOnKey;
+
+	public:
+		KnnIndex_t(std::string keyName, size_t space);
+
+		std::vector<std::vector<size_t>> perform(std::vector<std::vector<float>>& query, size_t limit);
+		std::priority_queue<std::pair<float, hnswlib::labeltype>> perform(const std::vector<float>& query, size_t limit);
+
+		nlohmann::json saveMetadata();
+		std::set<std::string> getIncludedKeys();
+		void buildIt(std::vector<group_storage_t*> storage);
+		DbIndex::IndexType getType() { return DbIndex::IndexType::KnnIndex; };
+	};
+
+	Iindex_t* loadIndexFromJSON(const nlohmann::json& metadata);
 	std::vector<nlohmann::json> saveIndexesToString(std::map<std::string, DbIndex::Iindex_t*>& indexes);
 }
 
@@ -70,6 +93,9 @@ public:
 
 	collection_t(std::string);
 	size_t insertDocument(nlohmann::json& document);
+	std::set<std::tuple<std::string, DbIndex::IndexType, DbIndex::Iindex_t*>> getIndexedKeys();
+
+	size_t countDocuments();
 };
 
 void loadDatabase(std::string);
