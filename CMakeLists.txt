@@ -20,15 +20,21 @@ add_executable(${PROJECT_NAME}  "main.h" "main.cpp" "database.h" "database.cpp" 
 								"hashing/sha256.h" "hashing/sha256.cpp"  
 								"CRUD/crud.h" "CRUD/create.cpp" "CRUD/select.cpp" "CRUD/update.cpp" "CRUD/remove.cpp")
 
-# Enable C++17 standard compliance
+# Enable C++17 standard compliance 
 set_property (TARGET ${PROJECT_NAME}
   PROPERTY CXX_STANDARD 17
 )
+#set(CMAKE_CXX_STANDARD 17)
+#set(CXX_STANDARD 17)
+#target_compile_features(${PROJECT_NAME} PUBLIC cxx_std_17)
 
+#IF(MSVC)
+ #   ADD_DEFINITIONS("/EHsc")
+#ENDIF(MSVC)
 
 target_link_libraries(${PROJECT_NAME} hnswlib)
 target_link_libraries(${PROJECT_NAME} hashing)
 target_link_libraries(${PROJECT_NAME} cpprestsdk::cpprest)
-target_link_libraries(${PROJECT_NAME} ${Boost_LIBRARIES} ${Boost_SYSTEM_LIBRARY})
+target_link_libraries(${PROJECT_NAME} ${Boost_LIBRARIES} ${Boost_SYSTEM_LIBRARY} ${Boost_FILESYSTEM_LIBRARY})
 target_link_libraries(${PROJECT_NAME} Boost::boost Boost::system Boost::program_options)
 target_link_libraries(${PROJECT_NAME} nlohmann_json)
