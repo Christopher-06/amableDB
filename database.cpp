@@ -112,34 +112,46 @@ collection_t::collection_t(std::string name)
 	this->name = name;
 }
 
-size_t collection_t::insertDocument(nlohmann::json& document)
+std::vector<size_t> collection_t::insertDocuments(const std::vector<nlohmann::json> documents)
 {
-	if (!document.contains("id")) {
-		// TODO: Create unused ID
-		std::random_device dev;
-		std::mt19937 rng(dev());
-		std::uniform_int_distribution<std::mt19937::result_type> dist(1, 6);
+	if (!documents.size())
+		return {}; // Emtpy
 
-		document["id"] = static_cast<size_t>(rng());
+	std::random_device rndDev;
+	std::mt19937 rng(rndDev());
+
+	// Find one random storage container
+	group_storage_t* storage = nullptr;
+	size_t storageSize = this->storage.size();
+	for (size_t i = 0; i < storageSize; ++i) {
+		storage = this->storage[std::rand() % storageSize];
+
+		if(storage->countDocuments() < MAX_ELEMENTS_IN_STORAGE)
+			break; // is not full
 	}
 
-	// Append in Storage Class
-	for (const auto& storage : this->storage) {
-		if (storage->countDocuments() >= MAX_ELEMENTS_IN_STORAGE)
-			continue;
-
-		// Got a Place
-		storage->insertDocument(document);
-		return document["id"].get<size_t>();
+	// Check if Full, all containers are full or less than 10 containers exist
+	if (storage == nullptr || storage->countDocuments() >= MAX_ELEMENTS_IN_STORAGE || this->storage.size() < 10) {
+		// Create new Storage File
+		const std::string storagePath = DATA_PATH + "\\col_" + this->name + "\\storageNew" + std::to_string(rng()) + ".knndb";
+		storage = new group_storage_t(storagePath);
+		this->storage.push_back(storage);
 	}
-	
-	// Create new Storage Class with id as filename (because it is a unique start point)
-	const std::string storagePath = DATA_PATH + "\\col_" + this->name + "\\storageNew" + std::to_string(document["id"].get<size_t>()) + ".knndb";
-	group_storage_t* storage = new group_storage_t(storagePath);
-	storage->insertDocument(document);
-	this->storage.push_back(storage);
 
-	return document["id"].get<size_t>();
+	// Enter all Documents
+	std::vector<size_t> entereredIds(documents.size());
+	auto enteredIdIT = entereredIds.begin();
+	for (auto doc : documents) {
+		if (!doc.contains("id")) {
+			// TODO: Create unused ID
+			doc["id"] = static_cast<size_t>(rng());
+		}
+
+		storage->insertDocument(doc);
+		*enteredIdIT = doc["id"];
+		++enteredIdIT;
+	}
+	return entereredIds;
 }
 
 std::set<std::tuple<std::string, DbIndex::IndexType, DbIndex::Iindex_t*>> collection_t::getIndexedKeys()
@@ -408,19 +420,30 @@ void DbIndex::KnnIndex_t::buildIt(std::vector<group_storage_t*> storage)
 	for (const auto& storagePtr : storage) {
 		storagePtr->doFuncOnAllDocuments([this, &data](nlohmann::json& document) {
 			if (document.contains(this->perfomedOnKey)) {
-				// document contains the key 
+				// document contains the key
+				if (!document[this->perfomedOnKey].is_array())
+					return;
 
-				// Build data-vector
+				data = std::vector<float>(this->spaceValue);
 				auto it = data.begin();
-				for (const auto& value : document[this->perfomedOnKey].get<std::vector<float>>()) {
-					*it = value;
-					++it;
 
+				// Build data-vector with only floats
+				for (const auto& item : document[this->perfomedOnKey].items()) {
+					const auto value = item.value();
+					if (value.is_number_float() || value.is_number() || value.is_number_integer())
+						*it = value.get<float>(); // Is integral value
+					else if (value.is_string())
+						*it = std::stof(value.get<std::string>()); // Was string
+					else
+						*it = 0; // Something weird is that
+
+					++it;
 					if (it == data.end())
-						break;
+						break; // There are too much, just abort
 				}
 
-				// Adding Padding
+
+				// Add Padding
 				while (it != data.end()) {
 					*it = 0;
 					++it;

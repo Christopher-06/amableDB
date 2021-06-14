@@ -20,10 +20,9 @@ nlohmann::json CRUD::create(nlohmann::json& documents)
 		if (!collections.count(colName))
 			collections[colName] = new collection_t(colName);
 
-		// Enter all Documents
-		for (auto& document : docArray.get<std::vector<nlohmann::json>>()) {
-			enteredIds.push_back(collections[colName]->insertDocument(document));
-		}
+		// Enter all Documents and insert new Ids
+		std::vector<size_t> curIds = collections[colName]->insertDocuments(docArray.get<std::vector<nlohmann::json>>());
+		enteredIds.insert(enteredIds.end(), curIds.begin(), curIds.end());	
 	}
 
 	return nlohmann::json({

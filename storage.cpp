@@ -12,10 +12,9 @@ const std::string EMPTY_ROW_SEQUENCE = "<fgsngflwsitu948whg49ghwe98gh>";
 
 group_storage_t::group_storage_t(std::string storagePath)
 {
-	this->locked = true;
-	this->readingFile = false;
 	this->storagePath = storagePath;
 	this->idPositions = {};
+	this->lockWatcher = lock::lock_watcher_t();
 
 	// Open storage file (will create it if needed)
 	this->storageFile = std::fstream(this->storagePath);
@@ -33,7 +32,6 @@ group_storage_t::group_storage_t(std::string storagePath)
 		++index;
 	}
 	storageFile.close();
-	this->locked = false;
 }
 
 bool group_storage_t::savedHere(size_t documentID)
@@ -44,12 +42,9 @@ bool group_storage_t::savedHere(size_t documentID)
 
 void group_storage_t::getDocuments(std::vector<size_t>* ids, std::vector<nlohmann::json>& documents, bool allDocuments)
 {
+	auto lock = this->lockWatcher.lock();
 	documents.reserve(ids->size());
-	while (this->locked)
-		std::this_thread::sleep_for(std::chrono::milliseconds(1));
-	this->locked = true;
-
-
+	
 	// Convert ids to block rows
 	std::map<size_t, size_t> rows = {};
 	for (auto it = ids->begin(); it != ids->end(); ++it) {
@@ -79,7 +74,6 @@ void group_storage_t::getDocuments(std::vector<size_t>* ids, std::vector<nlohman
 	}
 	
 	storageFile.close();
-	this->locked = false;
 }
 
 size_t group_storage_t::countDocuments()
@@ -95,10 +89,7 @@ void group_storage_t::insertDocument(const nlohmann::json& document)
 void group_storage_t::doFuncOnAllDocuments(std::function<void(nlohmann::json&)> func)
 {
 	this->save(); // write all unsaved/edited things down
-
-	while (this->locked) // Lock storage
-		std::this_thread::sleep_for(std::chrono::milliseconds(2));
-	this->locked = true;
+	auto lock = this->lockWatcher.lock();
 
 	// Perform func on every object
 	this->storageFile = std::fstream(this->storagePath);
@@ -111,10 +102,6 @@ void group_storage_t::doFuncOnAllDocuments(std::function<void(nlohmann::json&)> 
 		nlohmann::json lineDocument = nlohmann::json::parse(line);
 		func(lineDocument);
 	}
-	
-
-	// Finished --> unlock
-	this->locked = false;
 }
 
 void group_storage_t::save()
@@ -125,10 +112,7 @@ void group_storage_t::save()
 
 	if (!this->newDocuments.size() && !this->editedDocuments.size())
 		return; // Nothing was changed
-
-	while (this->locked) // Wait to lock storage file
-		std::this_thread::sleep_for(std::chrono::milliseconds(5));
-	this->locked = true;
+	auto lock = this->lockWatcher.lock();
 
 	// Create random (/hashed) new filename
 	std::string oldFilePath = this->storagePath.parent_path().u8string();
@@ -187,7 +171,29 @@ void group_storage_t::save()
 	// Delete old file  and change storagePath
 	std::filesystem::remove(this->storagePath);
 	this->storagePath = newFilePath;
+}
 
-	// Finished ==> Unlock and continue work
-	this->locked = false; 
+lock::lock_item_t lock::lock_watcher_t::lock()
+{
+	size_t id = size_t(std::rand());
+	this->queue[id] = false;
+
+	if(this->queue.size() == 1) // I am the only one
+		this->queue[id] = true;
+
+	while (!this->queue[id]) // Someone else is working
+		std::this_thread::sleep_for(std::chrono::nanoseconds(25));
+
+	// I can work, return lock and as soon as it is destroyed another can start
+	return lock::lock_item_t([this](size_t Id) {this->unlock(Id); }, id);
+}
+
+void lock::lock_watcher_t::unlock(size_t id)
+{
+	// Remove finished One
+	this->queue.erase(id);
+
+	// Check if somebody else will this (This way it doesn't need a thread per file)
+	if (this->queue.size())
+		this->queue.begin()->second = true;
 }

@@ -92,7 +92,7 @@ public:
 	std::map<std::string, DbIndex::Iindex_t*> indexes;
 
 	collection_t(std::string);
-	size_t insertDocument(nlohmann::json& document);
+	std::vector<size_t> insertDocuments(const std::vector<nlohmann::json> documents);
 	std::set<std::tuple<std::string, DbIndex::IndexType, DbIndex::Iindex_t*>> getIndexedKeys();
 
 	size_t countDocuments();
