@@ -6,6 +6,7 @@
 #include <map>
 #include <set>
 #include <chrono>
+#include <thread>
 #include <random>
 
 #include <nlohmann/json.hpp>
@@ -54,18 +55,28 @@ void loadCollection(std::string collectionPath) {
 	}
 
 	// Iterate through the collectionPath-Folder and load all storage files (.knndb extension)
-	for (const auto& file : std::filesystem::directory_iterator(collectionPath)) {
+	std::vector<std::thread> workers;
+	for (auto& file : std::filesystem::directory_iterator(collectionPath)) {
 		if (file.path().filename().u8string().find(".knndb") == std::string::npos)
 			continue; // No storage file knndb file
-		group_storage_t* storage = new group_storage_t(file.path().u8string());
-		col->storage.push_back(storage);
+
+		// Load .KNNDB File in another Thread 
+		workers.push_back(std::thread([file, col]() {
+			group_storage_t* storage = new group_storage_t(file.path().u8string());
+			col->storage.push_back(storage);
+		}));
+	}
+
+	// Finish all Worker
+	for (size_t i = 0; i < workers.size(); ++i)
+	{
+		if (workers[i].joinable())
+			workers[i].join();
 	}
 
 	// Make indexes
 	for (const auto& index : col->indexes)
 		index.second->buildIt(col->storage);
-
-	return;
 }
 
 void loadDatabase(std::string dataPath) {
@@ -143,8 +154,21 @@ std::vector<size_t> collection_t::insertDocuments(const std::vector<nlohmann::js
 	auto enteredIdIT = entereredIds.begin();
 	for (auto doc : documents) {
 		if (!doc.contains("id")) {
-			// TODO: Create unused ID
-			doc["id"] = static_cast<size_t>(rng());
+			// Create unused ID
+			bool hasUnusedOne = false;
+			while (!hasUnusedOne) {
+				size_t value = static_cast<size_t>(rng());
+				doc["id"] = value;
+
+				// Check if it is used
+				hasUnusedOne = true;
+				for (const auto& item : this->storage) {
+					if (item->savedHere(value)) {
+						hasUnusedOne = false;
+						break;
+					}
+				}
+			}	
 		}
 
 		storage->insertDocument(doc);
@@ -185,6 +209,7 @@ size_t collection_t::countDocuments()
 //	*** KeyValue Index ***
 DbIndex::KeyValueIndex_t::KeyValueIndex_t(std::string keyName, bool isHashedIndex)
 {
+	this->buildWatcher = lock::lock_watcher_t();
 	this->perfomedOnKey = keyName;
 	this->isHashedIndex = isHashedIndex;
 	this->data = {};
@@ -232,24 +257,37 @@ std::set<std::string> DbIndex::KeyValueIndex_t::getIncludedKeys()
 void DbIndex::KeyValueIndex_t::buildIt(std::vector<group_storage_t*> storage)
 {
 	this->isInWork = true;
+	auto lock = this->buildWatcher.lock();
 	this->data = {};
-	
-	for (const auto& storagePtr : storage) {
-		storagePtr->doFuncOnAllDocuments([this](nlohmann::json& document) {
-			if (document.contains(this->perfomedOnKey)) {
-				// document contains the key
-				nlohmann::json dataKey = document[this->perfomedOnKey];
-				if (this->isHashedIndex)
-					dataKey = sha256(dataKey.dump());
 
-				// Add dataKey to index-data
-				if (this->data.count(dataKey))
-					this->data[dataKey].push_back(document["id"].get<size_t>());
-				else
-					this->data[dataKey] = { document["id"].get<size_t>() };
-			}
-		});
+	// Worker Function
+	std::vector<std::thread> workers = {};
+	auto func = [this](nlohmann::json& document) {
+		if (!document.contains(this->perfomedOnKey))
+			return;
+
+		// document contains the key
+		nlohmann::json dataKey = document[this->perfomedOnKey];
+		if (this->isHashedIndex)
+			dataKey = sha256(dataKey.dump());
+
+		// Add dataKey to index-data
+		if (this->data.count(dataKey))
+			this->data[dataKey].push_back(document["id"].get<size_t>());
+		else
+			this->data[dataKey] = { document["id"].get<size_t>() };
+
+	};
+
+	for (auto& storagePtr : storage)
+		workers.push_back(std::thread(&group_storage_t::doFuncOnAllDocuments, storagePtr, func));
+	
+	// Finish all
+	for (size_t i = 0; i < workers.size(); ++i) {
+		if(workers[i].joinable())
+			workers[i].join();
 	}
+		
 
 	this->isInWork = false;
 	this->createdAt = std::chrono::duration_cast<std::chrono::seconds>(
@@ -350,6 +388,7 @@ void DbIndex::MultipleKeyValueIndex_t::buildIt(std::vector<group_storage_t*> sto
 //	*** Knn Index ***
 DbIndex::KnnIndex_t::KnnIndex_t(std::string keyName, size_t space)
 {
+	this->buildWatcher = lock::lock_watcher_t();
 	this->perfomedOnKey = keyName;
 	this->index = nullptr;
 	this->spaceValue = space;
@@ -407,53 +446,65 @@ std::set<std::string> DbIndex::KnnIndex_t::getIncludedKeys()
 void DbIndex::KnnIndex_t::buildIt(std::vector<group_storage_t*> storage)
 {
 	this->isInWork = true;
-
-	size_t total = 0; // Get total docs
+	auto lock = this->buildWatcher.lock();
+	
+	// Get total docs and reinit it
+	size_t total = 0; 
 	for (const auto& storagePtr : storage)
 		total += storagePtr->countDocuments();
-	
+
 	delete this->index;
 	this->index = new hnswlib::HierarchicalNSW<float>(&(this->space), total);
+	
+	// Worker Function
+	std::vector<std::thread> workers = {};
+	auto func = [this](nlohmann::json& document) {
+		if (!document.contains(this->perfomedOnKey))
+			return;
+		if (!document[this->perfomedOnKey].is_array())
+			return;
 
-	// Get all documents and add them into the Index
-	std::vector<float> data(this->spaceValue);
-	for (const auto& storagePtr : storage) {
-		storagePtr->doFuncOnAllDocuments([this, &data](nlohmann::json& document) {
-			if (document.contains(this->perfomedOnKey)) {
-				// document contains the key
-				if (!document[this->perfomedOnKey].is_array())
-					return;
+		// Got the key and it is an array
+		std::vector<float> data = std::vector<float>(this->spaceValue);
+		auto it = data.begin();
 
-				data = std::vector<float>(this->spaceValue);
-				auto it = data.begin();
+		// Build data-vector with only floats
+		for (const auto& item : document[this->perfomedOnKey].items()) {
+			const auto value = item.value();
+			if (value.is_number_float() || value.is_number() || value.is_number_integer())
+				*it = value.get<float>(); // Is integral value
+			else if (value.is_string())
+				*it = std::stof(value.get<std::string>()); // Was string
+			else
+				*it = 0; // Something weird is that
 
-				// Build data-vector with only floats
-				for (const auto& item : document[this->perfomedOnKey].items()) {
-					const auto value = item.value();
-					if (value.is_number_float() || value.is_number() || value.is_number_integer())
-						*it = value.get<float>(); // Is integral value
-					else if (value.is_string())
-						*it = std::stof(value.get<std::string>()); // Was string
-					else
-						*it = 0; // Something weird is that
-
-					++it;
-					if (it == data.end())
-						break; // There are too much, just abort
-				}
+			++it;
+			if (it == data.end())
+				break; // There are too much, just abort
+		}
 
 
-				// Add Padding
-				while (it != data.end()) {
-					*it = 0;
-					++it;
-				}
+		// Add Padding
+		while (it != data.end()) {
+			*it = 0;
+			++it;
+		}
 
-				hnswlib::labeltype _id = document["id"].get<size_t>();
-				this->index->addPoint(data.data(), _id);
-			}
-		});
+		// Add Datapoint
+		hnswlib::labeltype _id = document["id"].get<size_t>();
+		this->index->addPoint(data.data(), _id);
+	};	
+	
+	for (auto& storagePtr : storage)
+		workers.push_back(std::thread(&group_storage_t::doFuncOnAllDocuments, storagePtr, func));		
+	
+
+	// Finish all
+	for (size_t i = 0; i < workers.size(); ++i) {
+		if (workers[i].joinable())
+			workers[i].join();
 	}
+	
 
 	this->isInWork = false;
 	this->createdAt = std::chrono::duration_cast<std::chrono::seconds>(

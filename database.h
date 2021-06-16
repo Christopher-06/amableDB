@@ -23,6 +23,7 @@ namespace DbIndex {
 	public:
 		unsigned int createdAt;
 		bool isInWork;
+		lock::lock_watcher_t buildWatcher;
 
 		virtual void buildIt(std::vector<group_storage_t*> storage) = 0;
 		virtual std::set<std::string> getIncludedKeys() = 0;
@@ -64,7 +65,7 @@ namespace DbIndex {
 
 	class KnnIndex_t : public Iindex_t {
 	private:
-		hnswlib::AlgorithmInterface<float>* index;
+		hnswlib::AlgorithmInterface<float>* index = new hnswlib::HierarchicalNSW<float>(&hnswlib::L2Space(0), 0);;
 		hnswlib::L2Space space = hnswlib::L2Space(0);
 		size_t spaceValue;
 		std::string perfomedOnKey;
