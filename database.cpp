@@ -22,14 +22,14 @@
 void loadCollection(std::string collectionPath) {
 	// Firstly load metadata-file (.metadata extension). If it does not exist, we cannot 
 	// load the collection ==> just return and cout message
-	if (!std::filesystem::exists(collectionPath + "\\collection.metadata")) {
+	if (!std::filesystem::exists(collectionPath + "/collection.metadata")) {
 		std::cout << "Attention: Something went wrong! Collection may be corrupted" << std::endl;
 		std::cout << "Collection cannot be loaded: " << collectionPath << " Aborted." << std::endl;
 		return;
 	}
 
 	// Load and Parse metadata
-	std::ifstream fs(collectionPath + "\\collection.metadata", std::fstream::in);
+	std::ifstream fs(collectionPath + "/collection.metadata", std::fstream::in);
 	nlohmann::json metadata;
 	metadata << fs;
 	fs.close();
@@ -77,6 +77,9 @@ void loadCollection(std::string collectionPath) {
 	// Make indexes
 	for (const auto& index : col->indexes)
 		index.second->buildIt(col->storage);
+
+	// THis fixes a weird error in Xmemory
+	std::this_thread::sleep_for(std::chrono::milliseconds(500));
 }
 
 void loadDatabase(std::string dataPath) {
@@ -110,7 +113,7 @@ void saveDatabase(std::string dataPath) {
 		dbMetadata["indexes"] = DbIndex::saveIndexesToString(col.second->indexes);
 
 		// Write JSON down
-		std::ofstream metadataFile (dataPath + "\\col_" + col.first + "\\collection.metadata", std::fstream::trunc);
+		std::ofstream metadataFile (dataPath + "/col_" + col.first + "/collection.metadata", std::fstream::trunc);
 		metadataFile << dbMetadata;
 		metadataFile.close();
 	}
@@ -144,7 +147,7 @@ std::vector<size_t> collection_t::insertDocuments(const std::vector<nlohmann::js
 	// Check if Full, all containers are full or less than 10 containers exist
 	if (storage == nullptr || storage->countDocuments() >= MAX_ELEMENTS_IN_STORAGE || this->storage.size() < 10) {
 		// Create new Storage File
-		const std::string storagePath = DATA_PATH + "\\col_" + this->name + "\\storageNew" + std::to_string(rng()) + ".knndb";
+		const std::string storagePath = DATA_PATH + "/col_" + this->name + "/storageNew" + std::to_string(rng()) + ".knndb";
 		storage = new group_storage_t(storagePath);
 		this->storage.push_back(storage);
 	}
@@ -260,35 +263,23 @@ void DbIndex::KeyValueIndex_t::buildIt(std::vector<group_storage_t*> storage)
 	auto lock = this->buildWatcher.lock();
 	this->data = {};
 
-	// Worker Function
-	std::vector<std::thread> workers = {};
 	auto func = [this](nlohmann::json& document) {
 		if (!document.contains(this->perfomedOnKey))
 			return;
 
 		// document contains the key
-		nlohmann::json dataKey = document[this->perfomedOnKey];
+		auto dataKey = document[this->perfomedOnKey];
 		if (this->isHashedIndex)
 			dataKey = sha256(dataKey.dump());
 
-		// Add dataKey to index-data
-		if (this->data.count(dataKey))
-			this->data[dataKey].push_back(document["id"].get<size_t>());
-		else
-			this->data[dataKey] = { document["id"].get<size_t>() };
-
+		this->data[dataKey].push_back(document["id"].get<size_t>());
 	};
 
-	for (auto& storagePtr : storage)
-		workers.push_back(std::thread(&group_storage_t::doFuncOnAllDocuments, storagePtr, func));
-	
-	// Finish all
-	for (size_t i = 0; i < workers.size(); ++i) {
-		if(workers[i].joinable())
-			workers[i].join();
-	}
+	// Do it in a synchron way because inserting items in a map 
+	// is sometimes not thread-safe
+	for (auto& storagePtr : storage) 
+		storagePtr->doFuncOnAllDocuments(func);
 		
-
 	this->isInWork = false;
 	this->createdAt = std::chrono::duration_cast<std::chrono::seconds>(
 		std::chrono::system_clock::now().time_since_epoch() // Since 1970
@@ -390,9 +381,9 @@ DbIndex::KnnIndex_t::KnnIndex_t(std::string keyName, size_t space)
 {
 	this->buildWatcher = lock::lock_watcher_t();
 	this->perfomedOnKey = keyName;
-	this->index = nullptr;
-	this->spaceValue = space;
 	this->space = hnswlib::L2Space(space);
+	this->index = new hnswlib::HierarchicalNSW<float>(&this->space, 0);;
+	this->spaceValue = space;
 	this->createdAt = 0;
 	this->isInWork = false;
 }
@@ -483,14 +474,13 @@ void DbIndex::KnnIndex_t::buildIt(std::vector<group_storage_t*> storage)
 				break; // There are too much, just abort
 		}
 
-
 		// Add Padding
 		while (it != data.end()) {
 			*it = 0;
 			++it;
 		}
 
-		// Add Datapoint
+		// Add Datapoint when it is locked
 		hnswlib::labeltype _id = document["id"].get<size_t>();
 		this->index->addPoint(data.data(), _id);
 	};	

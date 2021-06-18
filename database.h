@@ -65,7 +65,7 @@ namespace DbIndex {
 
 	class KnnIndex_t : public Iindex_t {
 	private:
-		hnswlib::AlgorithmInterface<float>* index = new hnswlib::HierarchicalNSW<float>(&hnswlib::L2Space(0), 0);;
+		hnswlib::AlgorithmInterface<float>* index;
 		hnswlib::L2Space space = hnswlib::L2Space(0);
 		size_t spaceValue;
 		std::string perfomedOnKey;
