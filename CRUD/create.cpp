@@ -16,9 +16,11 @@ nlohmann::json CRUD::create(nlohmann::json& documents)
 		if (!docArray.is_array())
 			continue;
 
-		// Creat Collection when needed
-		if (!collections.count(colName))
+		// Create Collection when needed
+		if (!collections.count(colName)) {
+			std::filesystem::create_directories(DATA_PATH + "/col_" + colName);
 			collections[colName] = new collection_t(colName);
+		}
 
 		// Enter all Documents and insert new Ids
 		std::vector<size_t> curIds = collections[colName]->insertDocuments(docArray.get<std::vector<nlohmann::json>>());
