@@ -74,12 +74,11 @@ void loadCollection(std::string collectionPath) {
 			workers[i].join();
 	}
 
-	// Make indexes
-	for (const auto& index : col->indexes)
+	// Build indexes in the background
+	for (auto& index : col->indexes)
 		index.second->buildIt(col->storage);
+		//std::thread(&DbIndex::Iindex_t::buildIt, index.second, col->storage).detach();// 
 
-	// THis fixes a weird error in Xmemory
-	std::this_thread::sleep_for(std::chrono::milliseconds(500));
 }
 
 void loadDatabase(std::string dataPath) {
@@ -98,7 +97,7 @@ void loadDatabase(std::string dataPath) {
 		}
 	}
 
-	std::cout << "[INFO] Loaded all Collections and built all Indexes successfully" << std::endl;
+	std::cout << "[INFO] Loaded all Collections. Indexes are building in the background" << std::endl;
 }
 
 void saveDatabase(std::string dataPath) {
@@ -113,8 +112,8 @@ void saveDatabase(std::string dataPath) {
 		dbMetadata["indexes"] = DbIndex::saveIndexesToString(col.second->indexes);
 
 		// Write JSON down
-		std::ofstream metadataFile (dataPath + "/col_" + col.first + "/collection.metadata", std::fstream::trunc);
-		metadataFile << dbMetadata;
+		std::fstream metadataFile (dataPath + "/col_" + col.first + "/collection.metadata", std::fstream::trunc);
+		metadataFile << dbMetadata.dump();
 		metadataFile.close();
 	}
 }
@@ -414,8 +413,8 @@ std::vector<std::vector<size_t>> DbIndex::KnnIndex_t::perform(std::vector<std::v
 	return results;
 }
 
-std::priority_queue<std::pair<float, hnswlib::labeltype>> DbIndex::KnnIndex_t::perform(const std::vector<float>& query, size_t limit) {
-	return this->index->searchKnn(query.data(), limit);
+void DbIndex::KnnIndex_t::perform(const std::vector<float>& query, std::priority_queue<std::pair<float, hnswlib::labeltype>>* result, size_t limit) {
+	*result = this->index->searchKnn(query.data(), limit);
 }
 
 nlohmann::json DbIndex::KnnIndex_t::saveMetadata()

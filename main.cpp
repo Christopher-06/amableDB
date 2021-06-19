@@ -60,8 +60,10 @@ int main(int argc, char* argv[]) {
 
     // Main Loop
     std::cout << "  --- Everything is running fine ---  " << std::endl;
-    while (!INTERRUPT)
-        std::this_thread::sleep_for(std::chrono::milliseconds(500));  
+    while (!INTERRUPT) {
+        std::this_thread::sleep_for(std::chrono::minutes(60 * 3)); // 3 Minutes
+        saveDatabase(DATA_PATH);
+    } 
 
     // Exit
     std::cout << "  --- Shutting Database down ---  " << std::endl;

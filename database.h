@@ -74,7 +74,7 @@ namespace DbIndex {
 		KnnIndex_t(std::string keyName, size_t space);
 
 		std::vector<std::vector<size_t>> perform(std::vector<std::vector<float>>& query, size_t limit);
-		std::priority_queue<std::pair<float, hnswlib::labeltype>> perform(const std::vector<float>& query, size_t limit);
+		void perform(const std::vector<float>&, std::priority_queue<std::pair<float, hnswlib::labeltype>>*, size_t limit);
 
 		nlohmann::json saveMetadata();
 		std::set<std::string> getIncludedKeys();

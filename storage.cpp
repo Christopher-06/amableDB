@@ -117,7 +117,7 @@ void group_storage_t::save()
 	// Create random (/hashed) new filename
 	std::string oldFilePath = this->storagePath.parent_path().u8string();
 	std::string oldFileName = this->storagePath.filename().u8string();
-	std::string newFilePath = oldFilePath + "\\" + sha256(oldFileName) + ".knndb";
+	std::string newFilePath = oldFilePath + "//" + sha256(oldFileName) + ".knndb";
 	std::fstream newStorageFile = std::fstream(newFilePath, std::ios::app);
 
 	// Open also old file
