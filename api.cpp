@@ -10,20 +10,33 @@
 #include "CRUD/crud.h"
 
 namespace Endpoints {
-	nlohmann::json POST_Index(nlohmann::json& indexData) {
+	void POST_Index(nlohmann::json& indexData, nlohmann::json& response) {
 		// Iterate through Objects
 		for (const auto& item : indexData.items()) {
 			const std::string indexName = item.key();
 			const nlohmann::json indexOp = item.value();
 			const std::string colName = indexOp["collection"].get<std::string>();
 
-			if(!collections.count(colName)) // Collection does not exist
-				return nlohmann::json({ {"status", "failed"}, {"msg", "Collection does not exist"}, {"collection", colName}});
+			if (!collections.count(colName)) {// Collection does not exist
+				response = { 
+					{"status", "failed"}, 
+					{"msg", "Collection does not exist"}, 
+					{"collection", colName} 
+				};
+				return;
+			}
 
 			// Define index
 			if (indexOp.contains("definition") && indexOp["definition"].is_object()) {
-				if (collections[colName]->indexes.count(indexName)) // Index is already defined
-					return nlohmann::json({ {"status", "ok"}, {"msg", "Index does already exists"}, {"index", indexName} });
+				if (collections[colName]->indexes.count(indexName)) {
+					// Index is already defined
+					response = { 
+						{"status", "ok"}, 
+						{"msg", "Index does already exists"}, 
+						{"index", indexName} 
+					};
+					return;
+				}
 
 				nlohmann::json definition = indexOp["definition"];
 				definition["name"] = indexName;
@@ -36,14 +49,21 @@ namespace Endpoints {
 
 			// Build Index
 			if (indexOp.contains("build") && indexOp["build"].get<bool>()) {
-				if(!collections[colName]->indexes.count(indexName)) // Index is never defined
-					return nlohmann::json({ {"status", "failed"}, {"msg", "Index does not exist. Please create one first"}, {"index", indexName} });
-				
+				if (!collections[colName]->indexes.count(indexName)) {
+					// Index is never defined
+					response = { 
+						{"status", "failed"}, 
+						{"msg", "Index does not exist. Please create one first"}, 
+						{"index", indexName} 
+					};
+					return;
+				}
+
 				collections[colName]->indexes[indexName]->buildIt(collections[colName]->storage);
 			}
 		}
 
-		return nlohmann::json({ {"status", "ok"} });
+		response = { {"status", "ok"} };
 	}
 }
 
@@ -71,9 +91,10 @@ void HttpHandler::post(web::http::http_request request)
 		return;
 	}
 		
-	// Parse POST-Body, Fire right CRUD-Function and reply response
+	// Parse POST-Body, Fire right Function and reply response
 	nlohmann::json postData = nlohmann::json::parse(request.extract_string().get());
-	nlohmann::json response = apiRoutes["POST"][requestedPath](postData);
+	nlohmann::json response;
+	apiRoutes["POST"][requestedPath](postData, response);
 	request.reply(web::http::status_codes::OK, response.dump());
 }
 

@@ -10,10 +10,10 @@
 #include "../database.h"
 
 namespace CRUD {
-	nlohmann::json create(nlohmann::json& documents);
-	nlohmann::json select(nlohmann::json& documents);
-	nlohmann::json update(nlohmann::json& documents);
-	nlohmann::json remove(nlohmann::json& documents);
+	void create(nlohmann::json&, nlohmann::json&);
+	void select(nlohmann::json&, nlohmann::json&);
+	void update(nlohmann::json&, nlohmann::json&);
+	void remove(nlohmann::json&, nlohmann::json&);
 }
 
 namespace SELECT {
@@ -21,7 +21,7 @@ namespace SELECT {
 	class query_t {
 	public:
 		std::map<size_t, float> scores; // documentId, score
-		float maxScore = 0;
+		float maxScore = 1;
 		nlohmann::json query, resultInfo;
 
 		size_t limit = 1000;
@@ -36,7 +36,7 @@ namespace SELECT {
 		void performQuery();
 
 		void addResults(std::vector<size_t>::iterator, std::vector<size_t>::iterator, size_t factor = 1000);
-		std::vector<std::tuple<size_t, float>> exportResult();
+		void exportResult(std::vector<std::tuple<size_t, float>>&);
 	};
 
 	void similarOperator(const nlohmann::json&, query_t*);

@@ -3,6 +3,6 @@
 #include "crud.h"
 #include "../database.h"
 
-nlohmann::json CRUD::remove(nlohmann::json& documents) {
-	return nlohmann::json();
+void CRUD::remove(nlohmann::json& documents, nlohmann::json& response) {
+	
 }

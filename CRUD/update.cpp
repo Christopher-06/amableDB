@@ -3,6 +3,6 @@
 #include "crud.h"
 #include "../database.h"
 
-nlohmann::json CRUD::update(nlohmann::json& documents) {
-	return nlohmann::json();
+void CRUD::update(nlohmann::json& documents, nlohmann::json& response) {
+
 }

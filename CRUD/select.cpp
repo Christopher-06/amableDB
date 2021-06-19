@@ -9,25 +9,26 @@
 #include "../database.h"
 
 
-nlohmann::json CRUD::select(nlohmann::json& request) {
+void CRUD::select(nlohmann::json& request, nlohmann::json& response) {
 	try {
 		SELECT::query_t query = SELECT::query_t(request["query"], request["collection"].get<std::string>());
 		query.performQuery();
+		response = { {"status", "ok"}, {"result", {}} };
 
-		// Add Findings to Response
-		nlohmann::json results = { {"status", "ok"}, {"result", {}} };
+		// Add Findings to Response	
+		std::vector<std::tuple<size_t, float>> results;
+		query.exportResult(results);
 		size_t index = 0;
-		for (const auto& [documentID, score] : query.exportResult()) {
-			results["result"].push_back({ index, { {"score", score}, {"id", documentID} } });
+		for (const auto& [documentID, score] : results) {
+			response["result"].push_back({ index, { {"score", score}, {"id", documentID} } });
 			++index;
 		}
-		results["count"] = index;
+		response["count"] = index;
 
-		return results;
 	}
 	catch (nlohmann::json errorMsg) {
 		std::cout << "Error raised while selecting:" << std::endl << errorMsg.dump() << std::endl;
-		return { {"status", "failed"}, {"error", errorMsg} };
+		response = { {"status", "failed"}, {"error", errorMsg} };
 	}
 }
 
@@ -78,11 +79,13 @@ namespace SELECT {
 				for (const auto& [keyName, type, ptr] : indexedKeys) {
 					if (keyName != queryName)
 						continue; // Not the key
+					if (ptr->isInWork)
+						continue; // Cannot use it
 
 					std::vector<size_t> results;
 					if(type == DbIndex::IndexType::KeyValueIndex) {
 						// Is KeyValue Index
-						DbIndex::KeyValueIndex_t* index = dynamic_cast<DbIndex::KeyValueIndex_t*>(ptr);
+						DbIndex::KeyValueIndex_t* index = dynamic_cast<DbIndex::KeyValueIndex_t*>(ptr);						
 						std::vector<std::string> indexData = { queryValue.dump() };
 						results = index->perform(indexData)[0];					
 					}
@@ -109,12 +112,10 @@ namespace SELECT {
 		}
 	}
 
-	std::vector<std::tuple<size_t, float>> query_t::exportResult()
+	void query_t::exportResult(std::vector<std::tuple<size_t, float>>& result)
 	{
 		// Convert scores to vector of tuples
-		std::vector<std::tuple<size_t, float>> result;
 		result.reserve(this->scores.size());
-
 		for (const auto& [id, score] : this->scores) {
 			if(score >= this->maxScore)
 				result.push_back(std::make_tuple(id, score));
@@ -125,15 +126,13 @@ namespace SELECT {
 			return (std::get<1>(a) > std::get<1>(b));
 		});
 
-		// Slice, baddest is at the end
+		// Slice, the baddest One is at the end
 		if (result.size() > limit)
 			result = std::vector<std::tuple<size_t, float>>(result.begin(), result.begin() + this->limit);
 
 		// Calculate actual scores now
 		for (auto it = result.begin(); it != result.end(); ++it)
 			*it = std::make_pair(std::get<0>(*it), std::get<1>(*it) / this->maxScore);
-
-		return result;
 	}
 
 	//	** Operations **
@@ -155,9 +154,16 @@ namespace SELECT {
 
 		const std::string fieldName = query["fieldName"].get<std::string>();
 		const std::vector<float> value = query["value"].get<std::vector<float>>();
-
-		if(value.size() == 0)
+		
+		if (value.size() == 0)
 			throw nlohmann::json({ {"ZeroItems", "value vector's lenght is 0"} });
+
+		// Get kValue
+		size_t kValue = 0;
+		if (query.contains("k") && query["k"].is_number_integer())
+			kValue = query["k"].get<size_t>();
+		else // Set to default all Documents
+			kValue = queryObject->queryCol->countDocuments();	
 
 		// Get Index to fieldname
 		DbIndex::KnnIndex_t* knnIndex = nullptr;
@@ -173,22 +179,34 @@ namespace SELECT {
 			throw nlohmann::json({ {"IndexMissing", "No knn-Index contains the given fieldName"}, {"Input", fieldName}});
 
 		// Finally Perform Index. results[0] has the farest distance
-		size_t totalDocs = queryObject->queryCol->countDocuments();
-		std::priority_queue<std::pair<float, hnswlib::labeltype>> results = knnIndex->perform(value, totalDocs);
+		std::priority_queue<std::pair<float, hnswlib::labeltype>> results;
+		knnIndex->perform(value, &results, kValue);
+
+		// Because the keyValue Selection adds always 1.000 to the maxScore and we do not 
+		// want that this function can overwhelm the keyValue Selection, we only add
+		// max. 850 to the score:
+		// 
+		//				 	maxDistance - curDistance
+		//	item Score  +=	-------------------------
+		//						maxDistance / 850		<=== denominator
+		//
 
 		if (results.size()) {		
-			float maxDistance = -1;
+			float maxDistance = -1, denominator = -1;
 
 			while(!results.empty()) {
 				// Get item
 				auto [currentDistance, id] = results.top();
 				results.pop();
 
-				if (maxDistance < 0) 
-					maxDistance = std::ceil(currentDistance + 1);
+				if (maxDistance < 0) { 
+					// First One has the farest distance
+					maxDistance = currentDistance + 1;
+					denominator = maxDistance / 850;
+				}
 				
 
-				queryObject->scores[id] += maxDistance - currentDistance;
+				queryObject->scores[id] += (maxDistance - currentDistance) / denominator;
 			}		
 		}
 	}

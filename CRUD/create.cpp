@@ -6,7 +6,7 @@
 #include "../main.h"
 #include "../database.h"
 
-nlohmann::json CRUD::create(nlohmann::json& documents)
+void CRUD::create(nlohmann::json& documents, nlohmann::json& response)
 {
 	std::vector<size_t> enteredIds = {};
 	for (const auto& item : documents.items()) {
@@ -20,6 +20,7 @@ nlohmann::json CRUD::create(nlohmann::json& documents)
 		if (!collections.count(colName)) {
 			std::filesystem::create_directories(DATA_PATH + "/col_" + colName);
 			collections[colName] = new collection_t(colName);
+			saveDatabase(DATA_PATH);
 		}
 
 		// Enter all Documents and insert new Ids
@@ -27,8 +28,8 @@ nlohmann::json CRUD::create(nlohmann::json& documents)
 		enteredIds.insert(enteredIds.end(), curIds.begin(), curIds.end());	
 	}
 
-	return nlohmann::json({
+	response = {
 		{"status", "ok"},
 		{"newIds", enteredIds}
-		});
+	};
 }
