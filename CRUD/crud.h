@@ -16,12 +16,22 @@ namespace CRUD {
 	void remove(nlohmann::json&, nlohmann::json&);
 }
 
+namespace UPDATE {
+	void performUpdate(const nlohmann::json& input, const nlohmann::json& update, nlohmann::json& output);
+
+	void increaseOperator(nlohmann::json& document, nlohmann::json& update);
+
+	inline std::map<std::string, std::function<void(nlohmann::json&, nlohmann::json&)>> Operator = {
+		{"#inc", increaseOperator}
+	};
+}
+
 namespace SELECT {
 
 	class query_t {
 	public:
 		std::map<size_t, float> scores; // documentId, score
-		float maxScore = 1;
+		float maxScore;
 		nlohmann::json query, resultInfo;
 
 		size_t limit = 1000;

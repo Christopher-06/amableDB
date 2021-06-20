@@ -5,6 +5,7 @@
 #include <chrono>
 #include <thread>
 
+#include "CRUD/crud.h"
 #include "sha256.h"
 #include "storage.h"
 
@@ -14,7 +15,6 @@ group_storage_t::group_storage_t(std::string storagePath)
 {
 	this->storagePath = storagePath;
 	this->idPositions = {};
-	this->lockWatcher = lock::lock_watcher_t();
 
 	// Open storage file (will create it if needed)
 	this->storageFile = std::fstream(this->storagePath);
@@ -42,7 +42,7 @@ bool group_storage_t::savedHere(size_t documentID)
 
 void group_storage_t::getDocuments(std::vector<size_t>* ids, std::vector<nlohmann::json>& documents, bool allDocuments)
 {
-	auto lock = this->lockWatcher.lock();
+	std::unique_lock<std::mutex> lockGuard(this->fileLock, std::defer_lock);
 	documents.reserve(ids->size());
 	
 	// Convert ids to block rows
@@ -59,6 +59,7 @@ void group_storage_t::getDocuments(std::vector<size_t>* ids, std::vector<nlohman
 	}
 
 	// Get documents from storage file
+	lockGuard.lock();
 	this->storageFile = std::fstream(this->storagePath);
 	std::string line;
 	size_t index = 0;
@@ -74,6 +75,7 @@ void group_storage_t::getDocuments(std::vector<size_t>* ids, std::vector<nlohman
 	}
 	
 	storageFile.close();
+	lockGuard.unlock();
 }
 
 size_t group_storage_t::countDocuments()
@@ -86,10 +88,19 @@ void group_storage_t::insertDocument(const nlohmann::json& document)
 	this->newDocuments[document["id"].get<size_t>()] = document;
 }
 
+void group_storage_t::editDocument(const size_t id, const nlohmann::json& update)
+{
+	if (!this->savedHere(id))
+		return;
+
+	this->editedDocuments[this->idPositions[id]] = update;
+}
+
 void group_storage_t::doFuncOnAllDocuments(std::function<void(nlohmann::json&)> func)
 {
 	this->save(); // write all unsaved/edited things down
-	auto lock = this->lockWatcher.lock();
+	std::unique_lock<std::mutex> lockGuard(this->fileLock, std::defer_lock);
+	lockGuard.lock();
 
 	// Perform func on every object
 	this->storageFile = std::fstream(this->storagePath);
@@ -102,6 +113,8 @@ void group_storage_t::doFuncOnAllDocuments(std::function<void(nlohmann::json&)> 
 		nlohmann::json lineDocument = nlohmann::json::parse(line);
 		func(lineDocument);
 	}
+
+	lockGuard.unlock();
 }
 
 void group_storage_t::save()
@@ -112,7 +125,8 @@ void group_storage_t::save()
 
 	if (!this->newDocuments.size() && !this->editedDocuments.size())
 		return; // Nothing was changed
-	auto lock = this->lockWatcher.lock();
+	std::unique_lock<std::mutex> lockGuard(this->fileLock, std::defer_lock);
+	lockGuard.lock();
 
 	// Create random (/hashed) new filename
 	std::string oldFilePath = this->storagePath.parent_path().u8string();
@@ -144,8 +158,13 @@ void group_storage_t::save()
 		else {
 			// Line contains an document
 			if (this->editedDocuments.count(lineIndex)) {
-				// This document got an update
-				newStorageFile << this->editedDocuments[lineIndex] << "\n";
+				// Perform Update
+				nlohmann::json newDoc;
+				nlohmann::json oldDoc = nlohmann::json::parse(line);
+				UPDATE::performUpdate(oldDoc, this->editedDocuments[lineIndex], newDoc);
+
+				// Insert update
+				newStorageFile << newDoc.dump() << "\n";
 				this->editedDocuments.erase(lineIndex);
 			}
 			else {
@@ -171,29 +190,7 @@ void group_storage_t::save()
 	// Delete old file  and change storagePath
 	std::filesystem::remove(this->storagePath);
 	this->storagePath = newFilePath;
+
+	lockGuard.unlock();
 }
 
-lock::lock_item_t lock::lock_watcher_t::lock()
-{
-	size_t id = size_t(std::rand());
-	this->queue[id] = false;
-
-	if(this->queue.size() == 1) // I am the only one
-		this->queue[id] = true;
-
-	while (!this->queue[id]) // Someone else is working
-		std::this_thread::sleep_for(std::chrono::nanoseconds(25));
-
-	// I can work, return lock and as soon as it is destroyed another can start
-	return lock::lock_item_t([this](size_t Id) {this->unlock(Id); }, id);
-}
-
-void lock::lock_watcher_t::unlock(size_t id)
-{
-	// Remove finished One
-	this->queue.erase(id);
-
-	// Check if somebody else will this (This way it doesn't need a thread per file)
-	if (this->queue.size())
-		this->queue.begin()->second = true;
-}
