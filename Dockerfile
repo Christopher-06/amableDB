@@ -32,4 +32,6 @@ RUN make
 RUN mkdir /home/databaseData
 
 EXPOSE 3399
+VOLUME /home/databaseData
+
 ENTRYPOINT ["./amableDB", "--dataPath", "/home/databaseData/", "--apiAddress", "0.0.0.0"]
