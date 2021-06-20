@@ -1,5 +1,6 @@
 #include <vector>
 #include <set>
+#include <thread>
 #include <nlohmann/json.hpp>
 
 #include "crud.h"
@@ -20,7 +21,6 @@ void CRUD::create(nlohmann::json& documents, nlohmann::json& response)
 		if (!collections.count(colName)) {
 			std::filesystem::create_directories(DATA_PATH + "/col_" + colName);
 			collections[colName] = new collection_t(colName);
-			saveDatabase(DATA_PATH);
 		}
 
 		// Enter all Documents and insert new Ids
@@ -32,4 +32,7 @@ void CRUD::create(nlohmann::json& documents, nlohmann::json& response)
 		{"status", "ok"},
 		{"newIds", enteredIds}
 	};
+
+	// Let the database be saved
+	std::thread(saveDatabase, DATA_PATH).detach();
 }

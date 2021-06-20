@@ -1,6 +1,9 @@
 #include <iostream>
 #include <vector>
 #include <map>
+#include <thread>
+#include <chrono>
+#include <mutex>
 
 #include <algorithm> 
 #include <nlohmann/json.hpp>
@@ -11,20 +14,56 @@
 
 void CRUD::select(nlohmann::json& request, nlohmann::json& response) {
 	try {
+		// Perform Query
 		SELECT::query_t query = SELECT::query_t(request["query"], request["collection"].get<std::string>());
 		query.performQuery();
-		response = { {"status", "ok"}, {"result", {}} };
 
-		// Add Findings to Response	
+		// Get Results and Ids of them
 		std::vector<std::tuple<size_t, float>> results;
 		query.exportResult(results);
-		size_t index = 0;
-		for (const auto& [documentID, score] : results) {
-			response["result"].push_back({ index, { {"score", score}, {"id", documentID} } });
-			++index;
-		}
-		response["count"] = index;
 
+		std::vector<size_t> resultIds;
+		for (const auto& [documentID, score] : results)
+			resultIds.push_back(documentID);
+
+		// Get documents
+		std::map<size_t, nlohmann::json> documents;
+		std::mutex mut;
+		auto func = [&documents, &resultIds, &mut](group_storage_t* storage) {
+			// Get from Storage
+			std::vector<nlohmann::json> docs;
+			storage->getDocuments(&resultIds, docs);
+
+			// Insert in locked map
+			mut.lock();
+			for (const auto& doc : docs) {
+				size_t id = doc["id"].get<size_t>();
+				documents[id] = doc;
+			}
+			mut.unlock();
+		};
+
+		// Set workers for all Storages and wait
+		std::vector<std::thread> workers;
+		for (auto& storage : query.queryCol->storage)
+			workers.push_back(std::thread(func, storage));
+		for (size_t i = 0; i < workers.size(); ++i)
+		{
+			if (workers[i].joinable())
+				workers[i].join();
+		}
+
+		// Combine documents and Indexes
+		size_t index = 0;
+		response = { {"status", "ok"}, {"result", {}} };
+		for (const auto& [documentID, score] : results) {
+			if (documents.count(documentID)) {
+				response["result"].push_back({ index, score, documents[documentID] });
+				++index;
+			}		
+		}
+
+		response["count"] = index;
 	}
 	catch (nlohmann::json errorMsg) {
 		std::cout << "Error raised while selecting:" << std::endl << errorMsg.dump() << std::endl;
@@ -129,6 +168,9 @@ namespace SELECT {
 		// Slice, the baddest One is at the end
 		if (result.size() > limit)
 			result = std::vector<std::tuple<size_t, float>>(result.begin(), result.begin() + this->limit);
+
+		if (this->maxScore < 1)
+			this->maxScore = 1;
 
 		// Calculate actual scores now
 		for (auto it = result.begin(); it != result.end(); ++it)

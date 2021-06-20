@@ -6,6 +6,7 @@
 #include <cpprest/http_listener.h>
 #include <nlohmann/json.hpp>
 #include "api.h"
+#include "main.h"
 #include "database.h"
 #include "CRUD/crud.h"
 
@@ -45,6 +46,7 @@ namespace Endpoints {
 				DbIndex::Iindex_t* index = DbIndex::loadIndexFromJSON(definition);
 				collections[colName]->indexes[indexName] = index;
 				index->buildIt(collections[colName]->storage);
+				std::thread(saveDatabase, DATA_PATH).detach();
 			}
 
 			// Build Index

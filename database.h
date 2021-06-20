@@ -5,6 +5,7 @@
 #include <vector>
 #include <map>
 #include <set>
+#include <mutex>
 
 #include <nlohmann/json.hpp>
 
@@ -13,7 +14,7 @@
 
 
 namespace DbIndex {
-	enum IndexType {
+	enum class IndexType {
 		KeyValueIndex, 
 		MultipleKeyValueIndex,
 		KnnIndex
@@ -23,7 +24,7 @@ namespace DbIndex {
 	public:
 		unsigned int createdAt;
 		bool isInWork;
-		lock::lock_watcher_t buildWatcher;
+		std::mutex buildLock;
 
 		virtual void buildIt(std::vector<group_storage_t*> storage) = 0;
 		virtual std::set<std::string> getIncludedKeys() = 0;
@@ -91,6 +92,7 @@ public:
 	std::string name;
 	std::vector<group_storage_t*> storage;
 	std::map<std::string, DbIndex::Iindex_t*> indexes;
+	std::mutex saveLock;
 
 	collection_t(std::string);
 	std::vector<size_t> insertDocuments(const std::vector<nlohmann::json> documents);

@@ -103,18 +103,23 @@ void loadDatabase(std::string dataPath) {
 void saveDatabase(std::string dataPath) {
 	// Save Collections
 	for (const auto& col : collections) {
+		std::unique_lock<std::mutex> lockGuard(col.second->saveLock, std::defer_lock);
 		for (const auto storage : col.second->storage)
 			storage->save();
 
-		// Save Metadata to JSON-Object
+		lockGuard.lock();
+
+		// Save Metadata to JSON-Object		
 		nlohmann::json dbMetadata;
 		dbMetadata["name"] = col.first;
 		dbMetadata["indexes"] = DbIndex::saveIndexesToString(col.second->indexes);
 
 		// Write JSON down
-		std::fstream metadataFile (dataPath + "/col_" + col.first + "/collection.metadata", std::fstream::trunc);
+		std::ofstream metadataFile (dataPath + "/col_" + col.first + "/collection.metadata", std::fstream::trunc);
 		metadataFile << dbMetadata.dump();
 		metadataFile.close();
+
+		lockGuard.unlock();
 	}
 }
 
@@ -211,7 +216,6 @@ size_t collection_t::countDocuments()
 //	*** KeyValue Index ***
 DbIndex::KeyValueIndex_t::KeyValueIndex_t(std::string keyName, bool isHashedIndex)
 {
-	this->buildWatcher = lock::lock_watcher_t();
 	this->perfomedOnKey = keyName;
 	this->isHashedIndex = isHashedIndex;
 	this->data = {};
@@ -259,7 +263,8 @@ std::set<std::string> DbIndex::KeyValueIndex_t::getIncludedKeys()
 void DbIndex::KeyValueIndex_t::buildIt(std::vector<group_storage_t*> storage)
 {
 	this->isInWork = true;
-	auto lock = this->buildWatcher.lock();
+	std::unique_lock<std::mutex>lockGuard(this->buildLock, std::defer_lock);
+	lockGuard.lock();
 	this->data = {};
 
 	auto func = [this](nlohmann::json& document) {
@@ -279,6 +284,7 @@ void DbIndex::KeyValueIndex_t::buildIt(std::vector<group_storage_t*> storage)
 	for (auto& storagePtr : storage) 
 		storagePtr->doFuncOnAllDocuments(func);
 		
+	lockGuard.unlock();
 	this->isInWork = false;
 	this->createdAt = std::chrono::duration_cast<std::chrono::seconds>(
 		std::chrono::system_clock::now().time_since_epoch() // Since 1970
@@ -378,7 +384,6 @@ void DbIndex::MultipleKeyValueIndex_t::buildIt(std::vector<group_storage_t*> sto
 //	*** Knn Index ***
 DbIndex::KnnIndex_t::KnnIndex_t(std::string keyName, size_t space)
 {
-	this->buildWatcher = lock::lock_watcher_t();
 	this->perfomedOnKey = keyName;
 	this->space = hnswlib::L2Space(space);
 	this->index = new hnswlib::HierarchicalNSW<float>(&this->space, 0);;
@@ -436,13 +441,14 @@ std::set<std::string> DbIndex::KnnIndex_t::getIncludedKeys()
 void DbIndex::KnnIndex_t::buildIt(std::vector<group_storage_t*> storage)
 {
 	this->isInWork = true;
-	auto lock = this->buildWatcher.lock();
-	
+	std::unique_lock<std::mutex>lockGuard(this->buildLock, std::defer_lock);
+
 	// Get total docs and reinit it
 	size_t total = 0; 
 	for (const auto& storagePtr : storage)
 		total += storagePtr->countDocuments();
 
+	lockGuard.lock();
 	delete this->index;
 	this->index = new hnswlib::HierarchicalNSW<float>(&(this->space), total);
 	
@@ -493,7 +499,7 @@ void DbIndex::KnnIndex_t::buildIt(std::vector<group_storage_t*> storage)
 		if (workers[i].joinable())
 			workers[i].join();
 	}
-	
+	lockGuard.unlock();
 
 	this->isInWork = false;
 	this->createdAt = std::chrono::duration_cast<std::chrono::seconds>(
