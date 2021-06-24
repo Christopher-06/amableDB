@@ -507,6 +507,69 @@ void DbIndex::KnnIndex_t::buildIt(std::vector<group_storage_t*> storage)
 		).count();
 }
 
+//	*** Range Index ***
+DbIndex::RangeIndex_t::RangeIndex_t(std::string keyName)
+{
+	this->perfomedOnKey = keyName;
+	this->data = {};
+	this->createdAt = 0;
+	this->isInWork = false;
+}
+
+void DbIndex::RangeIndex_t::perform(float lowerBound, float higherBound, std::vector<size_t>& results)
+{
+	auto itLower = this->data.lower_bound(lowerBound);
+	auto itHigher = this->data.upper_bound(higherBound);
+
+	for (auto it = itLower; it != itHigher; ++it)
+		results.push_back(it->second);
+}
+
+nlohmann::json DbIndex::RangeIndex_t::saveMetadata()
+{
+	nlohmann::json metadata;
+
+	metadata["type"] = DbIndex::IndexType::RangeIndex;
+	metadata["keyName"] = this->perfomedOnKey;
+
+	return metadata;
+}
+
+void DbIndex::RangeIndex_t::buildIt(std::vector<group_storage_t*> storage)
+{
+	this->isInWork = true;
+	std::unique_lock<std::mutex>lockGuard(this->buildLock, std::defer_lock);
+	lockGuard.lock();
+	this->data = {};
+
+	auto func = [this](nlohmann::json& document) {
+		if (!document.contains(this->perfomedOnKey))
+			return;
+
+		// Parse Value and insert it		
+		try {
+			auto value = document[this->perfomedOnKey];
+
+			if (value.is_number())
+				this->data.insert(std::make_pair(value.get<float>(), document["id"].get<size_t>()));
+			else if (value.is_string())
+				this->data.insert(std::make_pair(std::stof(value.get<std::string>()), document["id"].get<size_t>()));
+		}
+		catch (int code) {}
+	};
+
+	// Do it in a synchron way because inserting items in a multimap 
+	// is sometimes not thread-safe
+	for (auto& storagePtr : storage)
+		storagePtr->doFuncOnAllDocuments(func);
+
+	lockGuard.unlock();
+	this->isInWork = false;
+	this->createdAt = std::chrono::duration_cast<std::chrono::seconds>(
+		std::chrono::system_clock::now().time_since_epoch() // Since 1970
+		).count();
+}
+
 
 
 DbIndex::Iindex_t* DbIndex::loadIndexFromJSON(const nlohmann::json& metadata)
@@ -524,6 +587,9 @@ DbIndex::Iindex_t* DbIndex::loadIndexFromJSON(const nlohmann::json& metadata)
 		break;
 	case DbIndex::IndexType::KnnIndex:
 		index = new DbIndex::KnnIndex_t(metadata["keyName"].get<std::string>(), metadata["space"].get<size_t>());
+		break;
+	case DbIndex::IndexType::RangeIndex:
+		index = new DbIndex::RangeIndex_t(metadata["keyName"].get<std::string>());
 		break;
 	}
 

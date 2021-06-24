@@ -5,6 +5,7 @@
 #include "main.h"
 #include "database.h"
 #include "api.h"
+#include "CRUD/crud.h"
 
 void parseStartArguments(int argc, char* argv[])
 {
@@ -61,8 +62,11 @@ int main(int argc, char* argv[]) {
     // Main Loop
     std::cout << "  --- Everything is running fine ---  " << std::endl;
     while (!INTERRUPT) {
-        std::this_thread::sleep_for(std::chrono::minutes(60 * 3)); // 3 Minutes
-        saveDatabase(DATA_PATH);
+        //std::this_thread::sleep_for(std::chrono::minutes(3)); // 3 Minutes
+        
+       // saveDatabase(DATA_PATH); // save
+        std::this_thread::sleep_for(std::chrono::seconds(2));
+        SELECT::cursor_t::removeLeftCursors();// remove left cursors
     } 
 
     // Exit

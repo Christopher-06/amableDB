@@ -96,6 +96,31 @@ void group_storage_t::editDocument(const size_t id, const nlohmann::json& update
 	this->editedDocuments[this->idPositions[id]] = update;
 }
 
+bool group_storage_t::removeDocument(const size_t id)
+{
+	if (this->idPositions.count(id)) {
+		this->removedDocuments.insert(this->idPositions[id]);
+		return true;
+	}
+
+	return false;	
+}
+
+std::vector<size_t> group_storage_t::getAllIds()
+{
+	std::vector<size_t> container;
+	this->getAllIds(container);
+	return container;
+}
+
+void group_storage_t::getAllIds(std::vector<size_t>& container)
+{
+	for (const auto& item : this->idPositions)
+		container.push_back(item.first);
+	for (const auto& item : this->newDocuments)
+		container.push_back(item.first);
+}
+
 void group_storage_t::doFuncOnAllDocuments(std::function<void(nlohmann::json&)> func)
 {
 	this->save(); // write all unsaved/edited things down
@@ -123,7 +148,7 @@ void group_storage_t::save()
 	// Then set it as storagePath and delete old one
 	// The new Filename is the hashed (old) filename
 
-	if (!this->newDocuments.size() && !this->editedDocuments.size())
+	if (!this->newDocuments.size() && !this->editedDocuments.size() && !this->removedDocuments.size())
 		return; // Nothing was changed
 	std::unique_lock<std::mutex> lockGuard(this->fileLock, std::defer_lock);
 	lockGuard.lock();
@@ -166,6 +191,11 @@ void group_storage_t::save()
 				// Insert update
 				newStorageFile << newDoc.dump() << "\n";
 				this->editedDocuments.erase(lineIndex);
+			}
+			else if (this->removedDocuments.count(lineIndex)) {
+				// Delete Document
+				newStorageFile << EMPTY_ROW_SEQUENCE << "\n";
+				this->removedDocuments.erase(lineIndex);
 			}
 			else {
 				// This document is not touched

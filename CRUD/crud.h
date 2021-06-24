@@ -5,9 +5,10 @@
 #include <vector>
 #include <tuple>
 #include <string>
-#include <nlohmann/json.hpp>
 
+#include <nlohmann/json.hpp>
 #include "../database.h"
+#include "../main.h"
 
 namespace CRUD {
 	void create(nlohmann::json&, nlohmann::json&);
@@ -28,10 +29,35 @@ namespace UPDATE {
 
 namespace SELECT {
 
+	class cursor_t {
+	private:
+		std::vector<std::tuple<size_t, float>> ids;
+		nlohmann::json documents;
+		size_t currentDocIndex = 0;
+		collection_t* queryCol;
+		
+		size_t createdAt, lastInteraction, timeout; // All in seconds | timeout = 30 Min
+				
+		std::mutex batchLock;		
+
+	public:
+		std::string myID;
+		size_t batchSize;
+
+		cursor_t(collection_t* queryCol, std::vector<std::tuple<size_t, float>>& ids, size_t batchSize = 50, size_t timeout = 1800);
+		~cursor_t();
+
+		void makeBatch();
+		bool retrieveBatch(std::vector<nlohmann::json>* documents);
+
+		static void killCursor(cursor_t* cursor);
+		static void removeLeftCursors();
+	};
+
 	class query_t {
 	public:
 		std::map<size_t, float> scores; // documentId, score
-		float maxScore;
+		float maxScore = 0;
 		nlohmann::json query, resultInfo;
 
 		size_t limit = 1000;
@@ -50,11 +76,15 @@ namespace SELECT {
 	};
 
 	void similarOperator(const nlohmann::json&, query_t*);
+	void rangeOperator(const nlohmann::json&, query_t*);
 
 	inline std::map<std::string, std::function<void(const nlohmann::json&, query_t*)>> Operator = {
 		{"#limit", NULL},
-		{"#similar", similarOperator}
+		{"#similar", similarOperator},
+		{"#range", rangeOperator}
 	};
+
+	inline std::map<std::string, cursor_t*> Cursors = {}; // uuid, cursor
 }
 
 #endif

@@ -17,7 +17,8 @@ namespace DbIndex {
 	enum class IndexType {
 		KeyValueIndex, 
 		MultipleKeyValueIndex,
-		KnnIndex
+		KnnIndex,
+		RangeIndex
 	};
 
 	class Iindex_t { // Base Class
@@ -81,6 +82,21 @@ namespace DbIndex {
 		std::set<std::string> getIncludedKeys();
 		void buildIt(std::vector<group_storage_t*> storage);
 		DbIndex::IndexType getType() { return DbIndex::IndexType::KnnIndex; };
+	};
+
+	class RangeIndex_t : public Iindex_t {
+	private:
+		std::string perfomedOnKey;
+		std::multimap<float, size_t> data;
+	public:
+
+		RangeIndex_t(std::string keyName);
+		void perform(float lowerBound, float higherBound, std::vector<size_t>& results);
+
+		nlohmann::json saveMetadata();
+		std::set<std::string> getIncludedKeys() { return { this->perfomedOnKey }; };
+		void buildIt(std::vector<group_storage_t*> storage);
+		DbIndex::IndexType getType() { return DbIndex::IndexType::RangeIndex; };
 	};
 
 	Iindex_t* loadIndexFromJSON(const nlohmann::json& metadata);

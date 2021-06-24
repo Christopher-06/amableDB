@@ -10,7 +10,8 @@
 
 #include "crud.h"
 #include "../database.h"
-
+#include "../main.h"
+#include "../hashing/sha256.h"
 
 void CRUD::select(nlohmann::json& request, nlohmann::json& response) {
 	try {
@@ -22,48 +23,11 @@ void CRUD::select(nlohmann::json& request, nlohmann::json& response) {
 		std::vector<std::tuple<size_t, float>> results;
 		query.exportResult(results);
 
-		std::vector<size_t> resultIds;
-		for (const auto& [documentID, score] : results)
-			resultIds.push_back(documentID);
 
-		// Get documents
-		std::map<size_t, nlohmann::json> documents;
-		std::mutex mut;
-		auto func = [&documents, &resultIds, &mut](group_storage_t* storage) {
-			// Get from Storage
-			std::vector<nlohmann::json> docs;
-			storage->getDocuments(&resultIds, docs);
-
-			// Insert in locked map
-			mut.lock();
-			for (const auto& doc : docs) {
-				size_t id = doc["id"].get<size_t>();
-				documents[id] = doc;
-			}
-			mut.unlock();
-		};
-
-		// Set workers for all Storages and wait
-		std::vector<std::thread> workers;
-		for (auto& storage : query.queryCol->storage)
-			workers.push_back(std::thread(func, storage));
-		for (size_t i = 0; i < workers.size(); ++i)
-		{
-			if (workers[i].joinable())
-				workers[i].join();
-		}
-
-		// Combine documents and Indexes
-		size_t index = 0;
-		response = { {"status", "ok"}, {"result", {}} };
-		for (const auto& [documentID, score] : results) {
-			if (documents.count(documentID)) {
-				response["result"].push_back({ index, score, documents[documentID] });
-				++index;
-			}		
-		}
-
-		response["count"] = index;
+		// Make Cursor and return uuid of it
+		SELECT::cursor_t* cursor = new SELECT::cursor_t(query.queryCol, results);
+		SELECT::Cursors[cursor->myID] = cursor;
+		response = { {"status", "ok"}, {"cursor_uuid", cursor->myID}, {"count", results.size()} };
 	}
 	catch (nlohmann::json errorMsg) {
 		std::cout << "Error raised while selecting:" << std::endl << errorMsg.dump() << std::endl;
@@ -73,6 +37,129 @@ void CRUD::select(nlohmann::json& request, nlohmann::json& response) {
 
 
 namespace SELECT {
+	cursor_t::cursor_t(collection_t* queryCol, std::vector<std::tuple<size_t, float>>& ids, size_t batchSize, size_t timeout) {
+		const auto time_since_epoch = std::chrono::system_clock::now().time_since_epoch();
+		const long long milliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(time_since_epoch).count();
+		this->myID = sha256(std::to_string(milliseconds));
+		
+		this->queryCol = (queryCol);
+		this->ids = (ids);
+		this->batchSize = batchSize;
+
+		this->createdAt = std::chrono::duration_cast<std::chrono::seconds>(time_since_epoch).count();
+		this->lastInteraction = this->createdAt;
+		this->timeout = timeout;
+
+		// Start with making the first batch
+		std::thread(&SELECT::cursor_t::makeBatch, this).detach();
+	}
+
+	cursor_t::~cursor_t() {
+		// try to lock and then delete everything
+		while (!this->batchLock.try_lock())
+			std::this_thread::sleep_for(std::chrono::milliseconds(5));
+			
+		this->documents.clear();
+		this->ids.clear();
+		this->queryCol = nullptr;
+
+		this->batchLock.unlock();
+	}
+
+	void cursor_t::makeBatch()
+	{
+		this->lastInteraction = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+		
+		if (!this->ids.size())
+			return; // Nothing to do
+
+		std::unique_lock<std::mutex> lockGuard(this->batchLock, std::defer_lock);
+		lockGuard.lock();
+
+		std::vector<nlohmann::json> docs;
+		std::vector<size_t> vectorIds;
+
+		// Get documents
+		while (this->documents.size() < size_t(this->batchSize * 1.75) && this->ids.size() > 0) {
+			// Get first element
+			const auto [id, score] = this->ids[0];
+			
+			
+			for (const auto& storage : this->queryCol->storage) {
+				if (storage->savedHere(id)) {
+					// Saved in this storage
+					docs = {};
+					vectorIds = {id};
+
+					// Get document
+					storage->getDocuments(&vectorIds, docs);
+					if (docs.size()) {
+						// If it found something
+						this->documents.push_back({ currentDocIndex, score, docs[0] });
+						++currentDocIndex;
+					}
+								
+					break;
+				}
+			}
+
+			// Erase here, because it is now inside documents
+			this->ids.erase(this->ids.begin());
+		}
+
+		lockGuard.unlock();
+	}
+
+	bool cursor_t::retrieveBatch(std::vector<nlohmann::json>* documents) {
+		while (this->documents.size() < this->batchSize && this->ids.size() > 0)
+			std::this_thread::sleep_for(std::chrono::nanoseconds(500)); // Wait because something is in work
+
+		// Get amount
+		size_t endIndex = 0;
+		if (this->documents.size() < this->batchSize || this->documents.size() == this->batchSize)
+			endIndex = this->documents.size();
+		else if (this->documents.size() > this->batchSize)
+			endIndex = this->batchSize;
+		
+		// Set documents
+		for (size_t i = 0; i < endIndex; i++)
+			documents->push_back(this->documents[i]);
+		this->documents.erase(this->documents.begin(), this->documents.begin() + endIndex);
+
+		// Make new batches
+		std::thread(&cursor_t::makeBatch, this).detach();
+
+		// Return true, when no documents and no ids left...
+		return (this->documents.size() == 0 && this->ids.size() == 0);
+	}
+
+	void cursor_t::killCursor(cursor_t* cursor)
+	{
+		SELECT::Cursors.erase(cursor->myID);
+		delete cursor;
+	}
+
+	void cursor_t::removeLeftCursors() {
+		const size_t nowTime = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+
+		// Find timed out cursors
+		std::vector<cursor_t*> killOrder;
+		for (const auto& pair : Cursors) {
+			const auto diff = nowTime - pair.second->lastInteraction;
+
+			if (diff >= pair.second->timeout) // Timeout reached or over
+				killOrder.push_back(pair.second);
+		}
+
+		// Kill them (if possible)
+		for (const auto& cursor : killOrder)
+			cursor_t::killCursor(cursor);
+
+		if (Cursors.size() == 0 && killOrder.size())
+			Cursors.clear(); // Clear to deallocate memory complety
+	}
+
+
 	query_t::query_t(nlohmann::json& query, std::string collectionName)
 	{
 		this->query = query;
@@ -97,6 +184,7 @@ namespace SELECT {
 
 	void query_t::performQuery()
 	{
+		bool allSelected = true;
 		for (const auto& item : this->query.items()) {
 			const nlohmann::json queryValue = item.value();
 			const std::string queryName = item.key();
@@ -108,12 +196,15 @@ namespace SELECT {
 
 				// Fire Operator-Function
 				auto func = Operator[queryName];
-				if(func != NULL)
+				if (func != NULL) {
 					func(queryValue, this);
+					allSelected = false;
+				}
 			}
 			else {
 				// Key-Value Search
 				this->maxScore += 1000;
+				allSelected = false;
 
 				for (const auto& [keyName, type, ptr] : indexedKeys) {
 					if (keyName != queryName)
@@ -140,6 +231,15 @@ namespace SELECT {
 						this->addResults(results.begin(), results.end());
 				}
 			}
+		}
+	
+		if (allSelected) {
+			// Add all Docs
+			std::vector<size_t> idContainer;
+			for (const auto& storage : this->queryCol->storage)
+				storage->getAllIds(idContainer);
+
+			this->addResults(idContainer.begin(), idContainer.end());
 		}
 	}
 
@@ -183,8 +283,8 @@ namespace SELECT {
 	/// Construct:
 	///		fieldName, std::string
 	///		value, std::vector<float>
+	///		k, size_t (optional)
 	/// </summary>
-	/// <param name="query"></param>
 	void similarOperator(const nlohmann::json& query, query_t* queryObject) {
 		// Exceptions
 		if (!query.contains("fieldName") | !query.contains("value")) 
@@ -251,6 +351,46 @@ namespace SELECT {
 				queryObject->scores[id] += (maxDistance - currentDistance) / denominator;
 			}		
 		}
+	}
+
+	/// <summary>
+	/// Construct:
+	///		fieldName, std::string
+	///		lower, float
+	///		higher, float
+	/// </summary>
+	void rangeOperator(const nlohmann::json& query, query_t* queryObject) {
+		// Exceptions
+		if (!query.contains("fieldName") | !query.contains("lower") | !query.contains("higher"))
+			throw nlohmann::json({ {"KeyMissing", "fieldName/lower/higher is missing"} });
+		if (!query["fieldName"].is_string())
+			throw nlohmann::json({ {"WrongType", "fieldName has to be a string!"}, {"Input", query["fieldName"].type_name()} });
+		if (!query["lower"].is_number() | !query["higher"].is_number())
+			throw nlohmann::json({ {"WrongType", "lower and higher should to be floating points!"}, {"Input", {query["lower"].type_name(),  query["higher"].type_name()}} });
+
+		// Parse Query
+		const std::string fieldName = query["fieldName"].get<std::string>();
+		float lowerBound = query["lower"].get<float>();
+		float higherBound = query["higher"].get<float>();
+		
+		// Get Index to fieldname
+		DbIndex::RangeIndex_t* rangeIndex = nullptr;
+		for (const auto& [keyName, type, ptr] : queryObject->indexedKeys) {
+			if (type == DbIndex::IndexType::RangeIndex && keyName == fieldName) {
+				// Correct index
+				rangeIndex = dynamic_cast<DbIndex::RangeIndex_t*>(ptr);
+				break;
+			}
+		}
+
+		if (rangeIndex == nullptr)
+			throw nlohmann::json({ {"IndexMissing", "No RangeIndex contains the given fieldName"}, {"Input", fieldName} });
+
+		// Add results
+		std::vector<size_t> results;
+		rangeIndex->perform(lowerBound, higherBound, results);
+		queryObject->addResults(results.begin(), results.end());
+		queryObject->maxScore += 1000;
 	}
 }
 
