@@ -10,10 +10,13 @@
 inline web::uri_builder uri;
 inline web::http::experimental::listener::http_listener listener;
 inline std::thread apiRunner;
-inline std::map<std::string, std::map<std::wstring, std::function<void(nlohmann::json&, nlohmann::json&)>>> apiRoutes;
+inline std::map<std::string, std::map<std::string, std::function<void(nlohmann::json&, nlohmann::json&)>>> apiRoutes;
 
 namespace Endpoints {
 	void POST_Index(nlohmann::json&, nlohmann::json&);
+
+	void GET_cursor(nlohmann::json&, nlohmann::json&);
+	void GET_collection(nlohmann::json&, nlohmann::json&);
 }
 
 namespace HttpHandler {
