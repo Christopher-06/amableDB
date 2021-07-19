@@ -35,6 +35,7 @@ namespace SELECT {
 		nlohmann::json documents;
 		size_t currentDocIndex = 0;
 		collection_t* queryCol;
+		std::map<std::string, bool> projection;
 		
 		size_t createdAt, lastInteraction, timeout; // All in seconds | timeout = 30 Min
 				
@@ -44,7 +45,7 @@ namespace SELECT {
 		std::string myID;
 		size_t batchSize;
 
-		cursor_t(collection_t* queryCol, std::vector<std::tuple<size_t, float>>& ids, size_t batchSize = 50, size_t timeout = 1800);
+		cursor_t(collection_t* queryCol, std::vector<std::tuple<size_t, float>>& ids, std::map<std::string, bool> projection, size_t batchSize = 50, size_t timeout = 1800);
 		~cursor_t();
 
 		void makeBatch();

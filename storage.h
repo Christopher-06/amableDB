@@ -11,6 +11,8 @@
 
 #include <nlohmann/json.hpp>
 
+nlohmann::json reduceJsonObject(nlohmann::json&, std::map<std::string, bool>&);
+
 class group_storage_t {
 private:
 	std::filesystem::path storagePath;
@@ -24,7 +26,7 @@ private:
 public:
 	group_storage_t(std::string storagePath);
 	bool savedHere(size_t);
-	void getDocuments(std::vector<size_t>* ids, std::vector< nlohmann::json>& documents, bool allDocuments = false);
+	void getDocuments(std::vector<size_t>* ids, std::vector<nlohmann::json>& documents, bool allDocuments = false, std::map<std::string, bool> projection = {});
 	
 	size_t countDocuments();
 	void insertDocument(const nlohmann::json& document);

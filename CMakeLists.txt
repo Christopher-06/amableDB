@@ -12,9 +12,11 @@ link_directories(${Boost_LIBRARY_DIRS})
 find_package(nlohmann_json REQUIRED)
 find_package(cpprestsdk CONFIG REQUIRED)
 
+
 # Find: Subdirectories
 add_subdirectory("hnswlib")
 add_subdirectory("hashing") 
+
 
 add_executable(${PROJECT_NAME}  "main.h" "main.cpp" "database.h" "database.cpp" "storage.cpp" "api.h" "api.cpp"  
 								"hashing/sha256.h" "hashing/sha256.cpp"  
@@ -24,13 +26,6 @@ add_executable(${PROJECT_NAME}  "main.h" "main.cpp" "database.h" "database.cpp" 
 set_property (TARGET ${PROJECT_NAME}
   PROPERTY CXX_STANDARD 17
 )
-#set(CMAKE_CXX_STANDARD 17)
-#set(CXX_STANDARD 17)
-#target_compile_features(${PROJECT_NAME} PUBLIC cxx_std_17)
-
-#IF(MSVC)
- #   ADD_DEFINITIONS("/EHsc")
-#ENDIF(MSVC)
 
 target_link_libraries(${PROJECT_NAME} hnswlib)
 target_link_libraries(${PROJECT_NAME} hashing)

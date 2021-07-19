@@ -15,6 +15,38 @@
 
 void CRUD::select(nlohmann::json& request, nlohmann::json& response) {
 	try {
+		// Check: projection
+		std::map<std::string, bool> projection = {}; //fieldname, shouldResponded? | when .size == 0 then all fields should Responded
+		if (request.contains("projection")) {
+			if (!request["projection"].is_object())
+				throw new nlohmann::json({ {"WrongType", "projection has to be an object"}, {"got", request["projection"]} });
+
+			for (const auto& item : request["projection"].items()) {
+				const nlohmann::json itemValue = item.value();
+				const std::string itemName = item.key();
+
+				if (!itemValue.is_boolean() & !itemValue.is_number())
+					throw new nlohmann::json({ {"WrongType", "items should be a boolean"}, {"got", {itemName, itemValue} } });
+
+				// Convert surely to bool
+				if (itemValue.is_number()) {
+					const int val = itemValue.get<int>();
+
+					// Numbers over 0 are true; 0 and negative values are false
+					if (val > 0)
+						projection[itemName] = true;
+					else
+						projection[itemName] = false;
+				}
+					
+
+				if (itemValue.is_boolean())
+					projection[itemName] = itemValue.get<bool>();
+				
+			}
+		}
+
+
 		// Perform Query
 		SELECT::query_t query = SELECT::query_t(request["query"], request["collection"].get<std::string>());
 		query.performQuery();
@@ -23,9 +55,8 @@ void CRUD::select(nlohmann::json& request, nlohmann::json& response) {
 		std::vector<std::tuple<size_t, float>> results;
 		query.exportResult(results);
 
-
 		// Make Cursor and return uuid of it
-		SELECT::cursor_t* cursor = new SELECT::cursor_t(query.queryCol, results);
+		SELECT::cursor_t* cursor = new SELECT::cursor_t(query.queryCol, results, projection);
 		SELECT::Cursors[cursor->myID] = cursor;
 		response = { {"status", "ok"}, {"cursor_uuid", cursor->myID}, {"count", results.size()} };
 	}
@@ -37,7 +68,7 @@ void CRUD::select(nlohmann::json& request, nlohmann::json& response) {
 
 
 namespace SELECT {
-	cursor_t::cursor_t(collection_t* queryCol, std::vector<std::tuple<size_t, float>>& ids, size_t batchSize, size_t timeout) {
+	cursor_t::cursor_t(collection_t* queryCol, std::vector<std::tuple<size_t, float>>& ids, std::map<std::string, bool> projection, size_t batchSize, size_t timeout) {
 		const auto time_since_epoch = std::chrono::system_clock::now().time_since_epoch();
 		const long long milliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(time_since_epoch).count();
 		this->myID = sha256(std::to_string(milliseconds));
@@ -45,6 +76,7 @@ namespace SELECT {
 		this->queryCol = (queryCol);
 		this->ids = (ids);
 		this->batchSize = batchSize;
+		this->projection = projection;
 
 		this->createdAt = std::chrono::duration_cast<std::chrono::seconds>(time_since_epoch).count();
 		this->lastInteraction = this->createdAt;
@@ -92,7 +124,7 @@ namespace SELECT {
 					vectorIds = {id};
 
 					// Get document
-					storage->getDocuments(&vectorIds, docs);
+					storage->getDocuments(&vectorIds, docs, false, projection);
 					if (docs.size()) {
 						// If it found something
 						this->documents.push_back({ currentDocIndex, score, docs[0] });

@@ -11,6 +11,22 @@
 
 const std::string EMPTY_ROW_SEQUENCE = "<fgsngflwsitu948whg49ghwe98gh>";
 
+nlohmann::json reduceJsonObject(nlohmann::json& input, std::map<std::string, bool>& projection) {
+	if (!projection.size()) // No projection given
+		return input;
+
+	// Change projection (keep id)
+	nlohmann::json output = { {"id", input["id"]} };
+	for (const auto& [fieldName, visible] : projection) {
+		if (!visible | !input.contains(fieldName))
+			continue; // field does not exist OR should not be responded
+
+		output[fieldName] = input[fieldName];
+	}
+
+	return output;
+}
+
 group_storage_t::group_storage_t(std::string storagePath)
 {
 	this->storagePath = storagePath;
@@ -40,7 +56,7 @@ bool group_storage_t::savedHere(size_t documentID)
 	return (this->idPositions.count(documentID) || this->newDocuments.count(documentID));
 }
 
-void group_storage_t::getDocuments(std::vector<size_t>* ids, std::vector<nlohmann::json>& documents, bool allDocuments)
+void group_storage_t::getDocuments(std::vector<size_t>* ids, std::vector<nlohmann::json>& documents, bool allDocuments, std::map<std::string, bool> projection)
 {
 	std::unique_lock<std::mutex> lockGuard(this->fileLock, std::defer_lock);
 	documents.reserve(ids->size());
@@ -54,8 +70,10 @@ void group_storage_t::getDocuments(std::vector<size_t>* ids, std::vector<nlohman
 
 	// Get documents from newDocuments
 	for (auto it = ids->begin(); it != ids->end(); ++it) {
-		if (this->newDocuments.count(*it) || allDocuments)
-			documents.push_back(this->newDocuments[*it]);
+		if (this->newDocuments.count(*it) || allDocuments) 
+			documents.push_back(reduceJsonObject(this->newDocuments[*it], projection));
+		
+			
 	}
 
 	// Get documents from storage file
@@ -67,7 +85,8 @@ void group_storage_t::getDocuments(std::vector<size_t>* ids, std::vector<nlohman
 		++index;
 		if (rows.count(index - 1) || allDocuments) {
 			// Block row is selected ==> Parse JSON and set it
-			documents.push_back(nlohmann::json::parse(line));
+			nlohmann::json doc = nlohmann::json::parse(line);
+			documents.push_back(reduceJsonObject(doc, projection));
 
 			if (documents.size() >= ids->size()) // Finished
 				break;
