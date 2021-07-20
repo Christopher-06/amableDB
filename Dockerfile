@@ -17,7 +17,6 @@ RUN ./bootstrap-vcpkg.sh
 RUN ./vcpkg integrate install
 RUN ./vcpkg install nlohmann-json:x64-linux
 
-
 # Copy Source Files to /usr/src/
 WORKDIR /usr/src/
 COPY . .
