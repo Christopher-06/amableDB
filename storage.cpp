@@ -27,6 +27,7 @@ nlohmann::json reduceJsonObject(nlohmann::json& input, std::map<std::string, boo
 	return output;
 }
 
+
 group_storage_t::group_storage_t(std::string storagePath)
 {
 	this->storagePath = storagePath;
@@ -119,6 +120,7 @@ bool group_storage_t::removeDocument(const size_t id)
 {
 	if (this->idPositions.count(id)) {
 		this->removedDocuments.insert(this->idPositions[id]);
+		this->idPositions.erase(id);
 		return true;
 	}
 

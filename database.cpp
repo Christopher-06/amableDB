@@ -609,3 +609,57 @@ std::vector<nlohmann::json> DbIndex::saveIndexesToString(std::map<std::string, D
 
 	return savedIndexes;
 }
+
+namespace CollectionFunctions {
+	void performTTLCheck(const collection_t* col) {
+		// Iterate through every storage and document to check wheter the &ttl field exists
+		
+		auto nowTimeSeconds = std::chrono::duration_cast<std::chrono::seconds>(
+			std::chrono::system_clock::now().time_since_epoch() // Since 1970
+		).count();
+
+		for (const auto& storage : col->storage) {
+			std::vector<size_t> ttlExpired = {}; // document ids
+
+			// Check all documents
+			storage->doFuncOnAllDocuments([&nowTimeSeconds, &ttlExpired](nlohmann::json& document) {
+				if (!document.contains("&ttl"))
+					return; // Field does not exist
+
+
+				// Calc diff
+				auto docTTLSeconds = document["&ttl"].get<long long>();
+				long long diff = nowTimeSeconds - docTTLSeconds;
+				
+				// If nowTime is greater than docTime ==> diff > 0 ==> Document's TTL is     expired
+				// If nowTime is   less  than docTime ==> diff < 0 ==> Document's TTL is NOT expired
+
+				if (diff > 0) // Expired
+					ttlExpired.push_back(document["id"].get<size_t>());
+			});
+
+			// Remove expired ones
+			for (const size_t& id : ttlExpired)
+				storage->removeDocument(id);
+
+			if (ttlExpired.size()) // Save if something happend
+				storage->save();
+		}
+	}
+
+
+	void runCircle() {
+		while (!INTERRUPT) {
+			// Do TTL Check
+			for (const auto& item : collections)
+				performTTLCheck(item.second);
+
+			std::this_thread::sleep_for(std::chrono::minutes(5));
+		}
+	}
+
+	void StartManagerThread() {
+		managerThread = std::thread(runCircle);
+	}
+}
+

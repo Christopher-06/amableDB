@@ -6,6 +6,8 @@
 #include <map>
 #include <set>
 #include <mutex>
+#include <thread>
+#include <chrono>
 
 #include <nlohmann/json.hpp>
 
@@ -103,6 +105,7 @@ namespace DbIndex {
 	std::vector<nlohmann::json> saveIndexesToString(std::map<std::string, DbIndex::Iindex_t*>& indexes);
 }
 
+
 class collection_t {
 public:
 	std::string name;
@@ -124,5 +127,13 @@ void saveDatabase(std::string dataPath);
 
 inline std::map<std::string, collection_t*> collections = {};
 
+namespace CollectionFunctions {
+	inline std::thread managerThread;
+
+	void performTTLCheck(const collection_t* col);
+
+	void runCircle();
+	void StartManagerThread();
+}
 
 #endif

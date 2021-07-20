@@ -58,14 +58,14 @@ int main(int argc, char* argv[]) {
     // Start Up
     loadDatabase(DATA_PATH);
     startAPI(API_PORT, API_ADDRESS);
+    CollectionFunctions::StartManagerThread();
 
     // Main Loop
     std::cout << "  --- Everything is running fine ---  " << std::endl;
     while (!INTERRUPT) {
-        //std::this_thread::sleep_for(std::chrono::minutes(3)); // 3 Minutes
+        std::this_thread::sleep_for(std::chrono::minutes(3));
         
-       // saveDatabase(DATA_PATH); // save
-        std::this_thread::sleep_for(std::chrono::seconds(2));
+        saveDatabase(DATA_PATH); // save Database
         SELECT::cursor_t::removeLeftCursors();// remove left cursors
     } 
 

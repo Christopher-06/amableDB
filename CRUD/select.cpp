@@ -153,15 +153,17 @@ namespace SELECT {
 		else if (this->documents.size() > this->batchSize)
 			endIndex = this->batchSize;
 		
-		// Set documents
-		for (size_t i = 0; i < endIndex; i++)
-			documents->push_back(this->documents[i]);
-		this->documents.erase(this->documents.begin(), this->documents.begin() + endIndex);
+		// Set documents (when some are available)
+		if (this->documents.size()) {
+			for (size_t i = 0; i < endIndex; i++)
+				documents->push_back(this->documents[i]);
+			this->documents.erase(this->documents.begin(), this->documents.begin() + endIndex);
+		}	
 
 		// Make new batches
 		std::thread(&cursor_t::makeBatch, this).detach();
 
-		// Return true, when no documents and no ids left...
+		// Return true, when no documents and no ids left (<== When it finished)...
 		return (this->documents.size() == 0 && this->ids.size() == 0);
 	}
 
@@ -188,7 +190,7 @@ namespace SELECT {
 			cursor_t::killCursor(cursor);
 
 		if (Cursors.size() == 0 && killOrder.size())
-			Cursors.clear(); // Clear to deallocate memory complety
+			Cursors.clear(); // Clear to deallocate memory completely
 	}
 
 
