@@ -106,91 +106,105 @@ namespace Endpoints {
 
 void HttpHandler::get(web::http::http_request request)
 {
-	// Get URI
-	std::string uri = utility::conversions::to_utf8string(request.relative_uri().to_string());
-	size_t splitIndex = uri.find_first_of('?');
-	auto requestedUri = uri.substr(0, splitIndex);
-	boost::replace_all(requestedUri, "/", "");
+	try {
+		// Get URI
+		std::string uri = utility::conversions::to_utf8string(request.relative_uri().to_string());
+		size_t splitIndex = uri.find_first_of('?');
+		auto requestedUri = uri.substr(0, splitIndex);
+		boost::replace_all(requestedUri, "/", "");
 
-	// Parse Parameter
-	nlohmann::json parameter;
-	if(splitIndex != std::wstring::npos){
-		std::string requestedParameter = uri.substr(splitIndex + 1);
-		std::string currentParameter;
+		// Parse Parameter
+		nlohmann::json parameter;
+		if(splitIndex != std::wstring::npos){
+			std::string requestedParameter = uri.substr(splitIndex + 1);
+			std::string currentParameter;
 
-		// As long as something is in the string
-		while (requestedParameter.size()) {
-			if (requestedParameter[0] == '&') // Remove maybe first &
-				requestedParameter = requestedParameter.substr(1);
+			// As long as something is in the string
+			while (requestedParameter.size()) {
+				if (requestedParameter[0] == '&') // Remove maybe first &
+					requestedParameter = requestedParameter.substr(1);
 
-			// Get one Parameter
-			splitIndex = requestedParameter.find_first_of('&');
-			if (splitIndex != std::wstring::npos)
-				currentParameter = requestedParameter.substr(0, splitIndex);
-			else
-				currentParameter = requestedParameter.substr(); // Complete
+				// Get one Parameter
+				splitIndex = requestedParameter.find_first_of('&');
+				if (splitIndex != std::wstring::npos)
+					currentParameter = requestedParameter.substr(0, splitIndex);
+				else
+					currentParameter = requestedParameter.substr(); // Complete
 
-			// Erase current from requests
-			boost::replace_all(requestedParameter, currentParameter, "");
+				// Erase current from requests
+				boost::replace_all(requestedParameter, currentParameter, "");
 
-			// Split to extract key and value
-			splitIndex = currentParameter.find_first_of('=');
-			if (splitIndex == std::wstring::npos)
-				continue; // Not an key value
+				// Split to extract key and value
+				splitIndex = currentParameter.find_first_of('=');
+				if (splitIndex == std::wstring::npos)
+					continue; // Not an key value
 
-			// Enter key-value as std::string
-			std::string wkey = currentParameter.substr(0, splitIndex);
-			std::string wvalue = currentParameter.substr(splitIndex + 1);
-			//auto skey = std::string(wkey.begin(), wkey.end());
-			//auto svalue = std::string(wvalue.begin(), wvalue.end());
-			parameter[wkey] = wvalue;
+				// Enter key-value as std::string
+				std::string wkey = currentParameter.substr(0, splitIndex);
+				std::string wvalue = currentParameter.substr(splitIndex + 1);
+				//auto skey = std::string(wkey.begin(), wkey.end());
+				//auto svalue = std::string(wvalue.begin(), wvalue.end());
+				parameter[wkey] = wvalue;
+			}
 		}
-	}
 	
-	// Does the Ressource exist?
-	if (!apiRoutes["GET"].count(requestedUri)) {
-		request.reply(web::http::status_codes::NotFound,
-			nlohmann::json(
-				{
-					{"status", "failed"},
-					{"msg", "Could not find Ressource you are looking for!"},
-					{"path", std::string(requestedUri.begin(), requestedUri.end())},
-				{"parameter", parameter}
-				}
-		).dump(), "application/json");
-		return;
-	}
+		// Does the Ressource exist?
+		if (!apiRoutes["GET"].count(requestedUri)) {
+			request.reply(web::http::status_codes::NotFound,
+				nlohmann::json(
+					{
+						{"status", "failed"},
+						{"msg", "Could not find Ressource you are looking for!"},
+						{"path", std::string(requestedUri.begin(), requestedUri.end())},
+					{"parameter", parameter}
+					}
+			).dump(), "application/json");
+			return;
+		}
 	
-	// Fire function and reply
-	nlohmann::json response;
-	apiRoutes["GET"][requestedUri](parameter, response);
-	request.reply(web::http::status_codes::OK, response.dump(), "application/json");
+		// Fire function and reply
+		nlohmann::json response;
+		apiRoutes["GET"][requestedUri](parameter, response);
+		request.reply(web::http::status_codes::OK, response.dump(), "application/json");
+	} catch (std::exception ex) {
+		// GET Error
+		std::cout << "[WARNING] Error on GET-Request:" << std::endl << ex.what() << std::endl;
+		request.reply(web::http::status_codes::InternalError, ex.what(), "plain/text");
+	}
 }
 
 void HttpHandler::post(web::http::http_request request)
-{	
-	std::string path = utility::conversions::to_utf8string(request.relative_uri().to_string());
-	std::string requestedPath = std::string(path.begin(), path.end());
-	boost::replace_all(requestedPath, "/", "");
+{
+	try {
+		std::string path = utility::conversions::to_utf8string(request.relative_uri().to_string());
+		std::string requestedPath = std::string(path.begin(), path.end());
+		boost::replace_all(requestedPath, "/", "");
 
-	if (!apiRoutes["POST"].count(requestedPath)) {
-		// Path does not exist
-		request.reply(web::http::status_codes::NotFound, 
-			nlohmann::json(
-				{ 
-					{"status", "failed"},
-					{"msg", "Could not find Ressource you are looking for!"},
-					{"path", std::string(requestedPath.begin(), requestedPath.end())}
-				}
+		if (!apiRoutes["POST"].count(requestedPath)) {
+			// Path does not exist
+			request.reply(web::http::status_codes::NotFound,
+				nlohmann::json(
+					{
+						{"status", "failed"},
+						{"msg", "Could not find Ressource you are looking for!"},
+						{"path", std::string(requestedPath.begin(), requestedPath.end())}
+					}
 			).dump(), "application/json");
-		return;
+			return;
+		}
+
+		// Parse POST-Body, Fire right Function and reply response
+		nlohmann::json postData = nlohmann::json::parse(request.extract_string().get());
+		nlohmann::json response;
+		apiRoutes["POST"][requestedPath](postData, response);
+		request.reply(web::http::status_codes::OK, response.dump(), "application/json");
+
 	}
-		
-	// Parse POST-Body, Fire right Function and reply response
-	nlohmann::json postData = nlohmann::json::parse(request.extract_string().get());
-	nlohmann::json response;
-	apiRoutes["POST"][requestedPath](postData, response);
-	request.reply(web::http::status_codes::OK, response.dump(), "application/json");
+	catch (std::exception ex) {
+		// POST Error
+		std::cout << "[WARNING] Error on Post-Request:" << std::endl << ex.what() << std::endl;
+		request.reply(web::http::status_codes::InternalError, ex.what(), "plain/text");
+	}
 }
 
 void defineRoutes() {
@@ -220,7 +234,16 @@ void startAPI(const int apiPort, const std::string apiAddress)
 	listener.support(web::http::methods::GET, HttpHandler::get);
 	listener.support(web::http::methods::POST, HttpHandler::post);
 
-	listener.open()
-		.then([]() {std::cout << "[INFO] API is up at: " << uri.to_string().c_str() << std::endl; })
-		.wait();
+	try {
+		listener.open()
+			.then([]() {std::cout << "[INFO] API is up at: " << uri.to_string().c_str() << std::endl; })
+			.wait();
+	}
+	catch (std::exception ex) {
+		// API Error
+		std::cout << "[FAILED] Error on API startup/listening (Retry in 2sec):" << std::endl << ex.what() << std::endl;
+		std::this_thread::sleep_for(std::chrono::seconds(2));
+		std::cout << "[INFO] Restart API..." << std::endl;
+	}
+	
 }
