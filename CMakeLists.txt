@@ -10,13 +10,12 @@ link_directories(${Boost_LIBRARY_DIRS})
 
 # Find: third-parties
 find_package(nlohmann_json REQUIRED)
-find_package(cpprestsdk CONFIG REQUIRED)
 
 
 # Find: Subdirectories
 add_subdirectory("hnswlib")
 add_subdirectory("hashing") 
-
+add_subdirectory("Simple-Web-Server") 
 
 add_executable(${PROJECT_NAME}  "main.h" "main.cpp" "database.h" "database.cpp" "storage.cpp" "api.h" "api.cpp"  
 								"hashing/sha256.h" "hashing/sha256.cpp"  
@@ -29,7 +28,7 @@ set_property (TARGET ${PROJECT_NAME}
 
 target_link_libraries(${PROJECT_NAME} hnswlib)
 target_link_libraries(${PROJECT_NAME} hashing)
-target_link_libraries(${PROJECT_NAME} cpprestsdk::cpprest)
+target_link_libraries(${PROJECT_NAME} simple-web-server)
 target_link_libraries(${PROJECT_NAME} ${Boost_LIBRARIES} ${Boost_SYSTEM_LIBRARY} ${Boost_FILESYSTEM_LIBRARY})
 target_link_libraries(${PROJECT_NAME} Boost::boost Boost::system Boost::program_options)
 target_link_libraries(${PROJECT_NAME} nlohmann_json)
