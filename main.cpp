@@ -57,7 +57,7 @@ int main(int argc, char* argv[]) {
 
     // Start Up
     loadDatabase(DATA_PATH);
-    startAPI(API_PORT, API_ADDRESS);
+    API::startAPI(API_PORT, API_ADDRESS);
     CollectionFunctions::StartManagerThread();
 
     // Main Loop
@@ -77,3 +77,4 @@ int main(int argc, char* argv[]) {
     exit(0);
     return 0;
 }
+
