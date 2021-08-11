@@ -142,7 +142,7 @@ void group_storage_t::getAllIds(std::vector<size_t>& container)
 		container.push_back(item.first);
 }
 
-void group_storage_t::doFuncOnAllDocuments(std::function<void(nlohmann::json&)> func)
+void group_storage_t::doFuncOnAllDocuments(std::function<void(const nlohmann::json&)> func)
 {
 	this->save(); // write all unsaved/edited things down
 	std::unique_lock<std::mutex> lockGuard(this->fileLock, std::defer_lock);
@@ -156,7 +156,7 @@ void group_storage_t::doFuncOnAllDocuments(std::function<void(nlohmann::json&)> 
 			continue;
 		
 		// Fire func on this document
-		nlohmann::json lineDocument = nlohmann::json::parse(line);
+		const nlohmann::json lineDocument = nlohmann::json::parse(line);
 		func(lineDocument);
 	}
 
@@ -244,4 +244,3 @@ void group_storage_t::save()
 
 	lockGuard.unlock();
 }
-

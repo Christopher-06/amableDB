@@ -35,8 +35,9 @@ public:
 
 	std::vector<size_t> getAllIds();
 	void getAllIds(std::vector<size_t>& container);
-	void doFuncOnAllDocuments(std::function<void(nlohmann::json&)> func);
+	void doFuncOnAllDocuments(std::function<void(const nlohmann::json&)> func);
 	void save();
 };
+
 
 #endif // !STORAGE_H

@@ -243,8 +243,6 @@ namespace SELECT {
 				for (const auto& [keyName, type, ptr] : indexedKeys) {
 					if (keyName != queryName)
 						continue; // Not the key
-					if (ptr->isInWork)
-						continue; // Cannot use it
 
 					std::vector<size_t> results;
 					if(type == DbIndex::IndexType::KeyValueIndex) {

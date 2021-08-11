@@ -75,9 +75,7 @@ void loadCollection(std::string collectionPath) {
 	}
 
 	// Build indexes in the background
-	for (auto& index : col->indexes)
-		index.second->buildIt(col->storage);
-		//std::thread(&DbIndex::Iindex_t::buildIt, index.second, col->storage).detach();// 
+	std::thread(&collection_t::BuildIndexes, col).detach();
 
 }
 
@@ -122,6 +120,7 @@ void saveDatabase(std::string dataPath) {
 		lockGuard.unlock();
 	}
 }
+
 
 //	*** collection_t ***
 collection_t::collection_t(std::string name)
@@ -200,6 +199,48 @@ std::set<std::tuple<std::string, DbIndex::IndexType, DbIndex::Iindex_t*>> collec
 	return list;
 }
 
+void collection_t::BuildIndexes()
+{
+	if (this->indexBuilderWaiting)
+		return; // If already someone is waiting to build
+
+	// Reset all and set inBuilding to true 
+	this->indexBuilderWaiting = true;
+	for (const auto& [name, index] : this->indexes) {
+		while (index->inBuilding) 
+			std::this_thread::sleep_for(std::chrono::milliseconds(25));
+		
+		index->inBuilding = true;
+		index->reset();
+	}
+	this->indexBuilderWaiting = false;
+
+	
+
+	auto workerFunc = [this](const nlohmann::json& item) {
+		// Add Item to all Indexes
+		for (const auto& [name, index] : this->indexes)
+			index->addItem(item);
+	};
+
+	// Iterate through storages and process all items (in Threads)
+	std::vector<std::thread> storageWorker = {};
+	for (const auto& storage : this->storage)
+		storageWorker.push_back(std::thread(&group_storage_t::doFuncOnAllDocuments, storage, workerFunc));
+
+	// Wait for all to complete
+	for (auto& worker : storageWorker)
+		worker.join();
+
+	
+
+	// Finish all Indexes and unlock
+	for (const auto& [name, index] : this->indexes) {
+		index->finish();
+		index->inBuilding = false;
+	}	
+}
+
 size_t collection_t::countDocuments()
 {
 	size_t total = 0;
@@ -211,7 +252,7 @@ size_t collection_t::countDocuments()
 }
 
 
-//	*** General Index ***
+//	*** Indexes ***
 
 //	*** KeyValue Index ***
 DbIndex::KeyValueIndex_t::KeyValueIndex_t(std::string keyName, bool isHashedIndex)
@@ -220,11 +261,42 @@ DbIndex::KeyValueIndex_t::KeyValueIndex_t(std::string keyName, bool isHashedInde
 	this->isHashedIndex = isHashedIndex;
 	this->data = {};
 	this->createdAt = 0;
-	this->isInWork = false;
+}
+
+void DbIndex::KeyValueIndex_t::reset()
+{
+	std::unique_lock<std::mutex> lockGuard(this->useLock);
+	this->data.clear();
+}
+
+void DbIndex::KeyValueIndex_t::finish()
+{
+	// Set time
+	this->createdAt = std::chrono::duration_cast<std::chrono::seconds>(
+		std::chrono::system_clock::now().time_since_epoch() // Since 1970
+		).count();
+}
+
+void DbIndex::KeyValueIndex_t::addItem(const nlohmann::json& item)
+{
+	if (!item.contains(this->perfomedOnKey))
+		return;
+
+	// document contains the key
+	auto dataKey = item[this->perfomedOnKey];
+	if (this->isHashedIndex)
+		dataKey = sha256(dataKey.dump());
+
+	std::unique_lock<std::mutex> lockGuard(this->useLock);
+	this->data[dataKey].push_back(item["id"].get<size_t>());
 }
 
 std::vector<std::vector<size_t>> DbIndex::KeyValueIndex_t::perform(std::vector<std::string>& values)
 {
+	while (this->inBuilding)
+		std::this_thread::sleep_for(std::chrono::nanoseconds(25));
+	std::unique_lock<std::mutex> lockGuard(this->useLock);
+
 	std::vector<std::vector<size_t>> result = {};
 	if (!this->data.size() || !values.size()) // Nothing available: Not build or No data
 		return result;
@@ -260,36 +332,6 @@ std::set<std::string> DbIndex::KeyValueIndex_t::getIncludedKeys()
 	return { this->perfomedOnKey };
 }
 
-void DbIndex::KeyValueIndex_t::buildIt(std::vector<group_storage_t*> storage)
-{
-	this->isInWork = true;
-	std::unique_lock<std::mutex>lockGuard(this->buildLock, std::defer_lock);
-	lockGuard.lock();
-	this->data = {};
-
-	auto func = [this](nlohmann::json& document) {
-		if (!document.contains(this->perfomedOnKey))
-			return;
-
-		// document contains the key
-		auto dataKey = document[this->perfomedOnKey];
-		if (this->isHashedIndex)
-			dataKey = sha256(dataKey.dump());
-
-		this->data[dataKey].push_back(document["id"].get<size_t>());
-	};
-
-	// Do it in a synchron way because inserting items in a map 
-	// is sometimes not thread-safe
-	for (auto& storagePtr : storage) 
-		storagePtr->doFuncOnAllDocuments(func);
-		
-	lockGuard.unlock();
-	this->isInWork = false;
-	this->createdAt = std::chrono::duration_cast<std::chrono::seconds>(
-		std::chrono::system_clock::now().time_since_epoch() // Since 1970
-	).count();
-}
 
 //	*** Multiple KeyValue Index ***
 DbIndex::MultipleKeyValueIndex_t::MultipleKeyValueIndex_t(std::vector<std::string> keyNames, bool isFullHashedIndex, std::vector<bool> isHashedIndex)
@@ -308,10 +350,33 @@ DbIndex::MultipleKeyValueIndex_t::MultipleKeyValueIndex_t(std::vector<std::strin
 	}
 
 	this->createdAt = 0;
-	this->isInWork = false;
+}
+
+void DbIndex::MultipleKeyValueIndex_t::reset()
+{
+	for (const auto& subIndex : this->indexes)
+		subIndex->reset();
+}
+
+void DbIndex::MultipleKeyValueIndex_t::finish()
+{
+	// Set time
+	this->createdAt = std::chrono::duration_cast<std::chrono::seconds>(
+		std::chrono::system_clock::now().time_since_epoch() // Since 1970
+		).count();
+}
+
+void DbIndex::MultipleKeyValueIndex_t::addItem(const nlohmann::json& item)
+{
+	for (const auto& subIndex : this->indexes)
+		subIndex->addItem(item);
 }
 
 std::vector<size_t> DbIndex::MultipleKeyValueIndex_t::perform(std::map<std::string, std::vector<std::string>>& query) {
+	while (this->inBuilding)
+		std::this_thread::sleep_for(std::chrono::nanoseconds(25));
+	std::unique_lock<std::mutex> lockGuard(this->useLock);
+	
 	if (!this->indexes.size() || !query.size()) // Nothing available: Not build or No data
 		return std::vector<size_t>();
 
@@ -368,18 +433,6 @@ std::set<std::string> DbIndex::MultipleKeyValueIndex_t::getIncludedKeys()
 	return keys;
 }
 
-void DbIndex::MultipleKeyValueIndex_t::buildIt(std::vector<group_storage_t*> storage)
-{
-	this->isInWork = true;
-
-	for (const auto& subIndex : this->indexes)
-		subIndex->buildIt(storage);
-
-	this->isInWork = false;
-	this->createdAt = std::chrono::duration_cast<std::chrono::seconds>(
-		std::chrono::system_clock::now().time_since_epoch() // Since 1970
-		).count();
-}
 
 //	*** Knn Index ***
 DbIndex::KnnIndex_t::KnnIndex_t(std::string keyName, size_t space)
@@ -389,7 +442,6 @@ DbIndex::KnnIndex_t::KnnIndex_t(std::string keyName, size_t space)
 	this->index = new hnswlib::HierarchicalNSW<float>(&this->space, 0);;
 	this->spaceValue = space;
 	this->createdAt = 0;
-	this->isInWork = false;
 }
 
 std::vector<std::vector<size_t>> DbIndex::KnnIndex_t::perform(std::vector<std::vector<float>>& query, size_t limit)
@@ -418,7 +470,86 @@ std::vector<std::vector<size_t>> DbIndex::KnnIndex_t::perform(std::vector<std::v
 	return results;
 }
 
+void DbIndex::KnnIndex_t::reset()
+{
+	std::unique_lock<std::mutex> lockGuard(this->useLock);
+	delete this->index;
+
+	// Find my collection and get total
+	size_t total = 100; // Buffer 100
+	for (const auto& [cName, col] : collections) {
+		for (const auto& [iName, type, indexPtr] : col->getIndexedKeys()) {
+			if (type != DbIndex::IndexType::KnnIndex)
+				continue; // Not my own type
+
+			DbIndex::KnnIndex_t* index = dynamic_cast<DbIndex::KnnIndex_t*>(indexPtr);
+			if (index != this)
+				continue; // Not me
+
+			// Got correct collection 
+			//	==> get total
+			for (const auto& storagePtr : col->storage)
+				total += storagePtr->countDocuments();
+			break;
+		}
+	}
+
+	this->index = new hnswlib::HierarchicalNSW<float>(&(this->space), total);
+}
+
+void DbIndex::KnnIndex_t::finish()
+{
+	// Set time
+	this->createdAt = std::chrono::duration_cast<std::chrono::seconds>(
+		std::chrono::system_clock::now().time_since_epoch() // Since 1970
+		).count();
+}
+
+void DbIndex::KnnIndex_t::addItem(const nlohmann::json& item)
+{
+	const auto document = item;
+	if (!document.contains(this->perfomedOnKey))
+		return;
+	if (!document[this->perfomedOnKey].is_array())
+		return;
+
+	// Got the key and it is an array
+	std::vector<float> data = std::vector<float>(this->spaceValue);
+	auto it = data.begin();
+
+	// Build data-vector with only floats
+	for (const auto& item : document[this->perfomedOnKey].items()) {
+		const auto value = item.value();
+		if (value.is_number_float() || value.is_number() || value.is_number_integer())
+			*it = value.get<float>(); // Is integral value
+		else if (value.is_string())
+			*it = std::stof(value.get<std::string>()); // Was string
+		else
+			*it = 0; // Something weird is that
+
+		++it;
+		if (it == data.end())
+			break; // There are too much, just abort
+	}
+
+	// Add Padding
+	while (it != data.end()) {
+		*it = 0;
+		++it;
+	}
+
+	std::unique_lock<std::mutex> lockGuard(this->useLock);
+
+	// Add Datapoint when it is locked
+	hnswlib::labeltype _id = document["id"].get<size_t>();
+	this->index->addPoint(data.data(), _id);
+}
+
 void DbIndex::KnnIndex_t::perform(const std::vector<float>& query, std::priority_queue<std::pair<float, hnswlib::labeltype>>* result, size_t limit) {
+	while (this->inBuilding)
+		std::this_thread::sleep_for(std::chrono::nanoseconds(25));
+	std::unique_lock<std::mutex> lockGuard(this->useLock);
+
 	*result = this->index->searchKnn(query.data(), limit);
 }
 
@@ -438,74 +569,6 @@ std::set<std::string> DbIndex::KnnIndex_t::getIncludedKeys()
 	return { this->perfomedOnKey };
 }
 
-void DbIndex::KnnIndex_t::buildIt(std::vector<group_storage_t*> storage)
-{
-	this->isInWork = true;
-	std::unique_lock<std::mutex>lockGuard(this->buildLock, std::defer_lock);
-
-	// Get total docs and reinit it
-	size_t total = 0; 
-	for (const auto& storagePtr : storage)
-		total += storagePtr->countDocuments();
-
-	lockGuard.lock();
-	delete this->index;
-	this->index = new hnswlib::HierarchicalNSW<float>(&(this->space), total);
-	
-	// Worker Function
-	std::vector<std::thread> workers = {};
-	auto func = [this](nlohmann::json& document) {
-		if (!document.contains(this->perfomedOnKey))
-			return;
-		if (!document[this->perfomedOnKey].is_array())
-			return;
-
-		// Got the key and it is an array
-		std::vector<float> data = std::vector<float>(this->spaceValue);
-		auto it = data.begin();
-
-		// Build data-vector with only floats
-		for (const auto& item : document[this->perfomedOnKey].items()) {
-			const auto value = item.value();
-			if (value.is_number_float() || value.is_number() || value.is_number_integer())
-				*it = value.get<float>(); // Is integral value
-			else if (value.is_string())
-				*it = std::stof(value.get<std::string>()); // Was string
-			else
-				*it = 0; // Something weird is that
-
-			++it;
-			if (it == data.end())
-				break; // There are too much, just abort
-		}
-
-		// Add Padding
-		while (it != data.end()) {
-			*it = 0;
-			++it;
-		}
-
-		// Add Datapoint when it is locked
-		hnswlib::labeltype _id = document["id"].get<size_t>();
-		this->index->addPoint(data.data(), _id);
-	};	
-	
-	for (auto& storagePtr : storage)
-		workers.push_back(std::thread(&group_storage_t::doFuncOnAllDocuments, storagePtr, func));		
-	
-
-	// Finish all
-	for (size_t i = 0; i < workers.size(); ++i) {
-		if (workers[i].joinable())
-			workers[i].join();
-	}
-	lockGuard.unlock();
-
-	this->isInWork = false;
-	this->createdAt = std::chrono::duration_cast<std::chrono::seconds>(
-		std::chrono::system_clock::now().time_since_epoch() // Since 1970
-		).count();
-}
 
 //	*** Range Index ***
 DbIndex::RangeIndex_t::RangeIndex_t(std::string keyName)
@@ -513,11 +576,45 @@ DbIndex::RangeIndex_t::RangeIndex_t(std::string keyName)
 	this->perfomedOnKey = keyName;
 	this->data = {};
 	this->createdAt = 0;
-	this->isInWork = false;
+}
+
+void DbIndex::RangeIndex_t::reset()
+{
+	std::unique_lock<std::mutex> lockGuard(this->useLock);
+	this->data.clear();
+}
+
+void DbIndex::RangeIndex_t::finish()
+{
+	this->createdAt = std::chrono::duration_cast<std::chrono::seconds>(
+		std::chrono::system_clock::now().time_since_epoch() // Since 1970
+		).count();
+}
+
+void DbIndex::RangeIndex_t::addItem(const nlohmann::json& item)
+{
+	if(!item.contains(this->perfomedOnKey))
+		return;
+
+	// Parse Value and insert it		
+	try {
+		auto value = item[this->perfomedOnKey];
+
+		std::unique_lock<std::mutex> lockGuard(this->useLock);
+		if (value.is_number())
+			this->data.insert(std::make_pair(value.get<float>(), item["id"].get<size_t>()));
+		else if (value.is_string())
+			this->data.insert(std::make_pair(std::stof(value.get<std::string>()), item["id"].get<size_t>()));
+	}
+	catch (int code) {}
 }
 
 void DbIndex::RangeIndex_t::perform(float lowerBound, float higherBound, std::vector<size_t>& results)
 {
+	while (this->inBuilding)
+		std::this_thread::sleep_for(std::chrono::nanoseconds(25));
+	std::unique_lock<std::mutex> lockGuard(this->useLock);
+
 	auto itLower = this->data.lower_bound(lowerBound);
 	auto itHigher = this->data.upper_bound(higherBound);
 
@@ -533,41 +630,6 @@ nlohmann::json DbIndex::RangeIndex_t::saveMetadata()
 	metadata["keyName"] = this->perfomedOnKey;
 
 	return metadata;
-}
-
-void DbIndex::RangeIndex_t::buildIt(std::vector<group_storage_t*> storage)
-{
-	this->isInWork = true;
-	std::unique_lock<std::mutex>lockGuard(this->buildLock, std::defer_lock);
-	lockGuard.lock();
-	this->data = {};
-
-	auto func = [this](nlohmann::json& document) {
-		if (!document.contains(this->perfomedOnKey))
-			return;
-
-		// Parse Value and insert it		
-		try {
-			auto value = document[this->perfomedOnKey];
-
-			if (value.is_number())
-				this->data.insert(std::make_pair(value.get<float>(), document["id"].get<size_t>()));
-			else if (value.is_string())
-				this->data.insert(std::make_pair(std::stof(value.get<std::string>()), document["id"].get<size_t>()));
-		}
-		catch (int code) {}
-	};
-
-	// Do it in a synchron way because inserting items in a multimap 
-	// is sometimes not thread-safe
-	for (auto& storagePtr : storage)
-		storagePtr->doFuncOnAllDocuments(func);
-
-	lockGuard.unlock();
-	this->isInWork = false;
-	this->createdAt = std::chrono::duration_cast<std::chrono::seconds>(
-		std::chrono::system_clock::now().time_since_epoch() // Since 1970
-		).count();
 }
 
 
@@ -610,6 +672,7 @@ std::vector<nlohmann::json> DbIndex::saveIndexesToString(std::map<std::string, D
 	return savedIndexes;
 }
 
+
 namespace CollectionFunctions {
 	void performTTLCheck(const collection_t* col) {
 		// Iterate through every storage and document to check wheter the &ttl field exists
@@ -622,7 +685,7 @@ namespace CollectionFunctions {
 			std::vector<size_t> ttlExpired = {}; // document ids
 
 			// Check all documents
-			storage->doFuncOnAllDocuments([&nowTimeSeconds, &ttlExpired](nlohmann::json& document) {
+			storage->doFuncOnAllDocuments([&nowTimeSeconds, &ttlExpired](const nlohmann::json& document) {
 				if (!document.contains("&ttl"))
 					return; // Field does not exist
 
