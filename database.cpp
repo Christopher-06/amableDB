@@ -22,6 +22,7 @@
 void loadCollection(std::string collectionPath) {
 	// Firstly load metadata-file (.metadata extension). If it does not exist, we cannot 
 	// load the collection ==> just return and cout message
+	std::mutex coutLock;
 	if (!std::filesystem::exists(collectionPath + "/collection.metadata")) {
 		std::cout << "Attention: Something went wrong! Collection may be corrupted" << std::endl;
 		std::cout << "Collection cannot be loaded: " << collectionPath << " Aborted." << std::endl;
@@ -61,9 +62,18 @@ void loadCollection(std::string collectionPath) {
 			continue; // No storage file knndb file
 
 		// Load .KNNDB File in another Thread 
-		workers.push_back(std::thread([file, col]() {
-			group_storage_t* storage = new group_storage_t(file.path().u8string());
-			col->storage.push_back(storage);
+		workers.push_back(std::thread([file, col, &coutLock]() {
+			try {
+				group_storage_t* storage = new group_storage_t(file.path().u8string());
+				col->storage.push_back(storage);
+			}
+			catch (std::exception ex) {
+				// File is corrupted
+				// ==> happens when new created documents are inserted and the program exits when it never 
+				//		wrote down or when it is writing down and the program exits. Then the other file 
+				//		should yet exist and we can savely remove this file (new created docs are unlucky/maybe later we fix that (: )
+				std::filesystem::remove(file);
+			}
 		}));
 	}
 
@@ -76,7 +86,6 @@ void loadCollection(std::string collectionPath) {
 
 	// Build indexes in the background
 	std::thread(&collection_t::BuildIndexes, col).detach();
-
 }
 
 void loadDatabase(std::string dataPath) {
@@ -201,25 +210,32 @@ std::set<std::tuple<std::string, DbIndex::IndexType, DbIndex::Iindex_t*>> collec
 
 void collection_t::BuildIndexes()
 {
-	if (this->indexBuilderWaiting)
-		return; // If already someone is waiting to build
+	if (!this->indexes.size())
+		return; // No Indexes exists
 
-	// Reset all and set inBuilding to true 
-	this->indexBuilderWaiting = true;
+	// Mark Waiting Stage: If try_lock (or own_lock) returns false, someone else is already waiting
+	// so we can just return
+	std::unique_lock<std::mutex> waitLock(this->indexBuilderWaiting, std::try_to_lock);
+	if (!waitLock.owns_lock())
+		return;
+
+	// Mark Working Stage: Waiting until we can start and then mark that we
+	// are not waiting anymore
+	std::unique_lock<std::mutex> workLock(this->indexBuilderWorking);
+	waitLock.unlock();
+
+	// Create the Indexes completly new (get Savestring and reload them) in the background and reset them directly
+	std::map<std::string, DbIndex::Iindex_t*> backgroundIndexes = {};
 	for (const auto& [name, index] : this->indexes) {
-		while (index->inBuilding) 
-			std::this_thread::sleep_for(std::chrono::milliseconds(25));
-		
-		index->inBuilding = true;
-		index->reset();
+		std::map<std::string, DbIndex::Iindex_t*> m = { { name, index } };
+		auto metadata = DbIndex::saveIndexesToString(m)[0];
+		backgroundIndexes[name] = DbIndex::loadIndexFromJSON(metadata);
+		backgroundIndexes[name]->reset();
 	}
-	this->indexBuilderWaiting = false;
 
-	
-
-	auto workerFunc = [this](const nlohmann::json& item) {
+	auto workerFunc = [&backgroundIndexes](const nlohmann::json& item) {
 		// Add Item to all Indexes
-		for (const auto& [name, index] : this->indexes)
+		for (const auto& [name, index] : backgroundIndexes)
 			index->addItem(item);
 	};
 
@@ -232,13 +248,26 @@ void collection_t::BuildIndexes()
 	for (auto& worker : storageWorker)
 		worker.join();
 
-	
-
 	// Finish all Indexes and unlock
-	for (const auto& [name, index] : this->indexes) {
+	for (const auto& [name, index] : backgroundIndexes) {
 		index->finish();
 		index->inBuilding = false;
-	}	
+	}
+
+	// Swap Background and Old indexes
+	std::map<std::string, DbIndex::Iindex_t*> oldIndexes = this->indexes;
+	for (auto& [name, index] : backgroundIndexes)
+		this->indexes[name] = index;
+
+	// Delete old Indexes in 15 sec
+	std::thread([](std::map<std::string, DbIndex::Iindex_t*> oldIndexes) {
+		std::this_thread::sleep_for(std::chrono::seconds(15));
+		for (auto& [name, index] : oldIndexes) {
+			delete oldIndexes[name];
+			oldIndexes[name] = nullptr;
+			
+		}		
+	}, oldIndexes).detach();
 }
 
 size_t collection_t::countDocuments()
@@ -442,6 +471,7 @@ DbIndex::KnnIndex_t::KnnIndex_t(std::string keyName, size_t space)
 	this->index = new hnswlib::HierarchicalNSW<float>(&this->space, 0);;
 	this->spaceValue = space;
 	this->createdAt = 0;
+	this->elementCount = 0;
 }
 
 std::vector<std::vector<size_t>> DbIndex::KnnIndex_t::perform(std::vector<std::vector<float>>& query, size_t limit)
@@ -475,26 +505,8 @@ void DbIndex::KnnIndex_t::reset()
 	std::unique_lock<std::mutex> lockGuard(this->useLock);
 	delete this->index;
 
-	// Find my collection and get total
-	size_t total = 100; // Buffer 100
-	for (const auto& [cName, col] : collections) {
-		for (const auto& [iName, type, indexPtr] : col->getIndexedKeys()) {
-			if (type != DbIndex::IndexType::KnnIndex)
-				continue; // Not my own type
-
-			DbIndex::KnnIndex_t* index = dynamic_cast<DbIndex::KnnIndex_t*>(indexPtr);
-			if (index != this)
-				continue; // Not me
-
-			// Got correct collection 
-			//	==> get total
-			for (const auto& storagePtr : col->storage)
-				total += storagePtr->countDocuments();
-			break;
-		}
-	}
-
-	this->index = new hnswlib::HierarchicalNSW<float>(&(this->space), total);
+	// Default 7 elements
+	this->index = new hnswlib::HierarchicalNSW<float>(&(this->space), 7);
 }
 
 void DbIndex::KnnIndex_t::finish()
@@ -539,6 +551,10 @@ void DbIndex::KnnIndex_t::addItem(const nlohmann::json& item)
 	}
 
 	std::unique_lock<std::mutex> lockGuard(this->useLock);
+
+	// Add one more to index
+	this->elementCount += 1;
+	dynamic_cast<hnswlib::HierarchicalNSW<float>*>(this->index)->resizeIndex(this->elementCount);
 
 	// Add Datapoint when it is locked
 	hnswlib::labeltype _id = document["id"].get<size_t>();
@@ -633,7 +649,7 @@ nlohmann::json DbIndex::RangeIndex_t::saveMetadata()
 }
 
 
-
+//	*** Metadata Saver/Loader
 DbIndex::Iindex_t* DbIndex::loadIndexFromJSON(const nlohmann::json& metadata)
 {
 	DbIndex::Iindex_t* index = nullptr;

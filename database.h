@@ -29,6 +29,8 @@ namespace DbIndex {
 		std::atomic<bool> inBuilding = false;
 		std::mutex useLock;
 
+		virtual ~Iindex_t() {};
+
 		virtual void reset() = 0;
 		virtual void finish() = 0;
 		virtual void addItem(const nlohmann::json& item) = 0;
@@ -40,12 +42,16 @@ namespace DbIndex {
 	};
 
 	class KeyValueIndex_t : public Iindex_t {
-	public:
-		std::string perfomedOnKey;
+	private:
 		bool isHashedIndex;
 		std::map<nlohmann::json, std::vector<size_t>> data; // 1. hash of value 2. id of documents
+	
+	public:
+		std::string perfomedOnKey;
 
 		KeyValueIndex_t(std::string keyName, bool isHashedIndex = false);
+		~KeyValueIndex_t() {};
+
 		inline void reset();
 		inline void finish();
 		inline void addItem(const nlohmann::json& item);
@@ -61,10 +67,12 @@ namespace DbIndex {
 		std::vector<std::string> keyNames;
 		bool isFullHashedIndex = false;
 		std::vector<bool> isHashedIndex;
+
 	public:
 		std::vector<KeyValueIndex_t*> indexes;
 
 		MultipleKeyValueIndex_t(std::vector<std::string> keyNames, bool isFullHashedIndex = false, std::vector<bool> isHashedIndex = {});
+		~MultipleKeyValueIndex_t() {};
 		inline void reset();
 		inline void finish();
 		inline void addItem(const nlohmann::json& item);
@@ -81,10 +89,12 @@ namespace DbIndex {
 		hnswlib::AlgorithmInterface<float>* index;
 		hnswlib::L2Space space = hnswlib::L2Space(0);
 		size_t spaceValue;
+		std::atomic<size_t> elementCount = 0;
 		std::string perfomedOnKey;
 
 	public:
 		KnnIndex_t(std::string keyName, size_t space);
+		~KnnIndex_t() { delete this->index; };
 
 		std::vector<std::vector<size_t>> perform(std::vector<std::vector<float>>& query, size_t limit);
 		void reset();
@@ -105,6 +115,7 @@ namespace DbIndex {
 	public:
 
 		RangeIndex_t(std::string keyName);
+		~RangeIndex_t() {};
 		inline void reset();
 		inline void finish();
 		inline void addItem(const nlohmann::json& item);
@@ -123,7 +134,8 @@ namespace DbIndex {
 
 class collection_t {
 private:
-	std::atomic<bool> indexBuilderWaiting = false;
+	std::mutex indexBuilderWaiting;
+	std::mutex indexBuilderWorking;
 
 public:
 	std::string name;
