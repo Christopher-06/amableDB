@@ -69,7 +69,7 @@ namespace DbIndex {
 		std::vector<bool> isHashedIndex;
 
 	public:
-		std::vector<KeyValueIndex_t*> indexes;
+		std::vector<std::shared_ptr<KeyValueIndex_t>> indexes;
 
 		MultipleKeyValueIndex_t(std::vector<std::string> keyNames, bool isFullHashedIndex = false, std::vector<bool> isHashedIndex = {});
 		~MultipleKeyValueIndex_t() {};
@@ -86,15 +86,15 @@ namespace DbIndex {
 
 	class KnnIndex_t : public Iindex_t {
 	private:
-		hnswlib::AlgorithmInterface<float>* index;
+		std::shared_ptr<hnswlib::AlgorithmInterface<float>> index = nullptr;
 		hnswlib::L2Space space = hnswlib::L2Space(0);
-		size_t spaceValue;
+		size_t spaceValue = 0;
 		std::atomic<size_t> elementCount = 0;
-		std::string perfomedOnKey;
+		std::string perfomedOnKey = "";
 
 	public:
 		KnnIndex_t(std::string keyName, size_t space);
-		~KnnIndex_t() { delete this->index; };
+		~KnnIndex_t() {};
 
 		std::vector<std::vector<size_t>> perform(std::vector<std::vector<float>>& query, size_t limit);
 		void reset();
@@ -127,8 +127,8 @@ namespace DbIndex {
 		DbIndex::IndexType getType() { return DbIndex::IndexType::RangeIndex; };
 	};
 
-	Iindex_t* loadIndexFromJSON(const nlohmann::json& metadata);
-	std::vector<nlohmann::json> saveIndexesToString(std::map<std::string, DbIndex::Iindex_t*>& indexes);
+	std::shared_ptr<DbIndex::Iindex_t> loadIndexFromJSON(const nlohmann::json& metadata);
+	std::vector<nlohmann::json> saveIndexesToString(std::map<std::string, std::shared_ptr<DbIndex::Iindex_t>>& indexes);
 }
 
 
@@ -140,12 +140,12 @@ private:
 public:
 	std::string name;
 	std::vector<group_storage_t*> storage;
-	std::map<std::string, DbIndex::Iindex_t*> indexes;
+	std::map<std::string, std::shared_ptr<DbIndex::Iindex_t>> indexes;
 	std::mutex saveLock;
 
 	collection_t(std::string);
 	std::vector<size_t> insertDocuments(const std::vector<nlohmann::json> documents);
-	std::set<std::tuple<std::string, DbIndex::IndexType, DbIndex::Iindex_t*>> getIndexedKeys();
+	std::set<std::tuple<std::string, DbIndex::IndexType, std::shared_ptr<DbIndex::Iindex_t>>> getIndexedKeys();
 	void BuildIndexes();
 
 	size_t countDocuments();

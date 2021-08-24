@@ -45,7 +45,7 @@ void loadCollection(std::string collectionPath) {
 			// Parse JSON Object to Index
 			const std::string indexName = indexMeta["name"].get<std::string>();
 			const nlohmann::json indexObject = nlohmann::json(indexMeta);
-			DbIndex::Iindex_t* index = DbIndex::loadIndexFromJSON(indexObject);
+			std::shared_ptr<DbIndex::Iindex_t> index = DbIndex::loadIndexFromJSON(indexObject);
 
 			// Set Index in collection
 			if (index != nullptr)
@@ -193,16 +193,16 @@ std::vector<size_t> collection_t::insertDocuments(const std::vector<nlohmann::js
 	return entereredIds;
 }
 
-std::set<std::tuple<std::string, DbIndex::IndexType, DbIndex::Iindex_t*>> collection_t::getIndexedKeys()
+std::set<std::tuple<std::string, DbIndex::IndexType, std::shared_ptr<DbIndex::Iindex_t>>> collection_t::getIndexedKeys()
 {
-	std::set<std::tuple<std::string, DbIndex::IndexType, DbIndex::Iindex_t*>> list;
+	std::set<std::tuple<std::string, DbIndex::IndexType, std::shared_ptr<DbIndex::Iindex_t>>> list;
 
 	// Get all Keys from all Indexes
 	for (const auto& index : this->indexes) {
 		const auto type = index.second->getType();
 
 		for(const auto& keyName : index.second->getIncludedKeys())
-			list.insert(std::tuple<std::string, DbIndex::IndexType, DbIndex::Iindex_t*>(keyName, type, index.second));
+			list.insert(std::tuple<std::string, DbIndex::IndexType, std::shared_ptr<DbIndex::Iindex_t>>(keyName, type, index.second));
 	}
 		
 	return list;
@@ -225,12 +225,13 @@ void collection_t::BuildIndexes()
 	waitLock.unlock();
 
 	// Create the Indexes completly new (get Savestring and reload them) in the background and reset them directly
-	std::map<std::string, DbIndex::Iindex_t*> backgroundIndexes = {};
+	std::map<std::string, std::shared_ptr<DbIndex::Iindex_t>> backgroundIndexes = {};
 	for (const auto& [name, index] : this->indexes) {
-		std::map<std::string, DbIndex::Iindex_t*> m = { { name, index } };
+		std::map<std::string, std::shared_ptr<DbIndex::Iindex_t>> m = { { name, index } };
 		auto metadata = DbIndex::saveIndexesToString(m)[0];
 		backgroundIndexes[name] = DbIndex::loadIndexFromJSON(metadata);
 		backgroundIndexes[name]->reset();
+		backgroundIndexes[name]->inBuilding = true;
 	}
 
 	auto workerFunc = [&backgroundIndexes](const nlohmann::json& item) {
@@ -254,20 +255,9 @@ void collection_t::BuildIndexes()
 		index->inBuilding = false;
 	}
 
-	// Swap Background and Old indexes
-	std::map<std::string, DbIndex::Iindex_t*> oldIndexes = this->indexes;
+	// Push background Index to Live
 	for (auto& [name, index] : backgroundIndexes)
 		this->indexes[name] = index;
-
-	// Delete old Indexes in 15 sec
-	std::thread([](std::map<std::string, DbIndex::Iindex_t*> oldIndexes) {
-		std::this_thread::sleep_for(std::chrono::seconds(15));
-		for (auto& [name, index] : oldIndexes) {
-			delete oldIndexes[name];
-			oldIndexes[name] = nullptr;
-			
-		}		
-	}, oldIndexes).detach();
 }
 
 size_t collection_t::countDocuments()
@@ -370,12 +360,16 @@ DbIndex::MultipleKeyValueIndex_t::MultipleKeyValueIndex_t(std::vector<std::strin
 	this->isFullHashedIndex = isFullHashedIndex;
 	this->isHashedIndex = isHashedIndex;
 
-	// Enter all indexes	
+	// Enter all Sub-Indexes	
 	for (int i = 0; i < keyNames.size(); ++i) {
-		this->indexes.push_back(new DbIndex::KeyValueIndex_t(
-			keyNames[i], 
-			(isFullHashedIndex || (isHashedIndex.size() == keyNames.size() && isHashedIndex[i]))
-		));
+		std::shared_ptr<DbIndex::KeyValueIndex_t> subIndex(
+			new DbIndex::KeyValueIndex_t(
+				keyNames[i],
+				(isFullHashedIndex || (isHashedIndex.size() == keyNames.size() && isHashedIndex[i]))
+			)
+		);
+
+		this->indexes.push_back(subIndex);
 	}
 
 	this->createdAt = 0;
@@ -468,7 +462,7 @@ DbIndex::KnnIndex_t::KnnIndex_t(std::string keyName, size_t space)
 {
 	this->perfomedOnKey = keyName;
 	this->space = hnswlib::L2Space(space);
-	this->index = new hnswlib::HierarchicalNSW<float>(&this->space, 0);;
+	this->index = std::shared_ptr<hnswlib::HierarchicalNSW<float>>(new hnswlib::HierarchicalNSW<float>(&this->space, 0));
 	this->spaceValue = space;
 	this->createdAt = 0;
 	this->elementCount = 0;
@@ -503,10 +497,9 @@ std::vector<std::vector<size_t>> DbIndex::KnnIndex_t::perform(std::vector<std::v
 void DbIndex::KnnIndex_t::reset()
 {
 	std::unique_lock<std::mutex> lockGuard(this->useLock);
-	delete this->index;
 
-	// Default 7 elements
-	this->index = new hnswlib::HierarchicalNSW<float>(&(this->space), 7);
+	// Default 3 elements
+	std::shared_ptr<hnswlib::HierarchicalNSW<float>>(new hnswlib::HierarchicalNSW<float>(&this->space, 3));
 }
 
 void DbIndex::KnnIndex_t::finish()
@@ -554,7 +547,7 @@ void DbIndex::KnnIndex_t::addItem(const nlohmann::json& item)
 
 	// Add one more to index
 	this->elementCount += 1;
-	dynamic_cast<hnswlib::HierarchicalNSW<float>*>(this->index)->resizeIndex(this->elementCount);
+	static_cast<hnswlib::HierarchicalNSW<float>*>(this->index.get())->resizeIndex(this->elementCount);
 
 	// Add Datapoint when it is locked
 	hnswlib::labeltype _id = document["id"].get<size_t>();
@@ -650,31 +643,39 @@ nlohmann::json DbIndex::RangeIndex_t::saveMetadata()
 
 
 //	*** Metadata Saver/Loader
-DbIndex::Iindex_t* DbIndex::loadIndexFromJSON(const nlohmann::json& metadata)
+std::shared_ptr<DbIndex::Iindex_t> DbIndex::loadIndexFromJSON(const nlohmann::json& metadata)
 {
-	DbIndex::Iindex_t* index = nullptr;
+	std::shared_ptr<DbIndex::Iindex_t> index = nullptr;
 	const std::string indexName = metadata["name"].get<std::string>();
 	const DbIndex::IndexType indexType = metadata["type"].get<DbIndex::IndexType>();
 
 	switch (indexType) {
 	case DbIndex::IndexType::KeyValueIndex:
-		index = new DbIndex::KeyValueIndex_t(metadata["keyName"].get<std::string>(), metadata["isHashedIndex"].get<bool>());
+		index = std::shared_ptr<DbIndex::Iindex_t>(
+			new DbIndex::KeyValueIndex_t(metadata["keyName"].get<std::string>(), metadata["isHashedIndex"].get<bool>())
+		);
 		break;
 	case DbIndex::IndexType::MultipleKeyValueIndex:
-		index = new DbIndex::MultipleKeyValueIndex_t(metadata["keyNames"], metadata["isFullHashedIndex"].get<bool>(), metadata["isHashedIndex"]);
+		index = std::shared_ptr<DbIndex::Iindex_t>(
+			new DbIndex::MultipleKeyValueIndex_t(metadata["keyNames"], metadata["isFullHashedIndex"].get<bool>(), metadata["isHashedIndex"])
+		);
 		break;
 	case DbIndex::IndexType::KnnIndex:
-		index = new DbIndex::KnnIndex_t(metadata["keyName"].get<std::string>(), metadata["space"].get<size_t>());
+		index = std::shared_ptr<DbIndex::Iindex_t>(
+			new DbIndex::KnnIndex_t(metadata["keyName"].get<std::string>(), metadata["space"].get<size_t>())
+		);
 		break;
 	case DbIndex::IndexType::RangeIndex:
-		index = new DbIndex::RangeIndex_t(metadata["keyName"].get<std::string>());
+		index = std::shared_ptr<DbIndex::Iindex_t>(
+			new DbIndex::RangeIndex_t(metadata["keyName"].get<std::string>())
+		);
 		break;
 	}
 
 	return index;
 }
 
-std::vector<nlohmann::json> DbIndex::saveIndexesToString(std::map<std::string, DbIndex::Iindex_t*>& indexes)
+std::vector<nlohmann::json> DbIndex::saveIndexesToString(std::map<std::string, std::shared_ptr<DbIndex::Iindex_t>>& indexes)
 {
 	std::vector<nlohmann::json> savedIndexes = {};
 	

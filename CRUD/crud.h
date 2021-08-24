@@ -67,7 +67,7 @@ namespace SELECT {
 
 		// Database Infos
 		collection_t* queryCol;
-		std::set<std::tuple<std::string, DbIndex::IndexType, DbIndex::Iindex_t*>> indexedKeys;
+		std::set<std::tuple<std::string, DbIndex::IndexType, std::shared_ptr<DbIndex::Iindex_t>>> indexedKeys;
 
 
 		query_t(nlohmann::json&, std::string);

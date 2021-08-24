@@ -247,13 +247,13 @@ namespace SELECT {
 					std::vector<size_t> results;
 					if(type == DbIndex::IndexType::KeyValueIndex) {
 						// Is KeyValue Index
-						DbIndex::KeyValueIndex_t* index = dynamic_cast<DbIndex::KeyValueIndex_t*>(ptr);						
+						std::shared_ptr<DbIndex::KeyValueIndex_t>  index = std::static_pointer_cast<DbIndex::KeyValueIndex_t>(ptr);
 						std::vector<std::string> indexData = { queryValue.dump() };
 						results = index->perform(indexData)[0];					
 					}
 					else if (type == DbIndex::IndexType::MultipleKeyValueIndex) {
 						// Is MultipleValue Index
-						DbIndex::MultipleKeyValueIndex_t* index = dynamic_cast<DbIndex::MultipleKeyValueIndex_t*>(ptr);
+						std::shared_ptr < DbIndex::MultipleKeyValueIndex_t> index = std::static_pointer_cast<DbIndex::MultipleKeyValueIndex_t>(ptr);
 						std::map<std::string, std::vector<std::string>> indexMap = {};
 						indexMap[queryName] = std::vector<std::string>({ queryValue.dump() });
 						results = index->perform(indexMap);
@@ -340,11 +340,11 @@ namespace SELECT {
 			kValue = queryObject->queryCol->countDocuments();	
 
 		// Get Index to fieldname
-		DbIndex::KnnIndex_t* knnIndex = nullptr;
+		std::shared_ptr<DbIndex::KnnIndex_t> knnIndex = nullptr;
 		for (const auto& [keyName, type, ptr] : queryObject->indexedKeys) {
 			if (type == DbIndex::IndexType::KnnIndex && keyName == fieldName) {
 				// Correct index
-				knnIndex = dynamic_cast<DbIndex::KnnIndex_t*>(ptr);
+				knnIndex = std::static_pointer_cast<DbIndex::KnnIndex_t>(ptr);
 				break;
 			}
 		}
@@ -406,11 +406,11 @@ namespace SELECT {
 		float higherBound = query["higher"].get<float>();
 		
 		// Get Index to fieldname
-		DbIndex::RangeIndex_t* rangeIndex = nullptr;
+		std::shared_ptr<DbIndex::RangeIndex_t> rangeIndex = nullptr;
 		for (const auto& [keyName, type, ptr] : queryObject->indexedKeys) {
 			if (type == DbIndex::IndexType::RangeIndex && keyName == fieldName) {
 				// Correct index
-				rangeIndex = dynamic_cast<DbIndex::RangeIndex_t*>(ptr);
+				rangeIndex = std::static_pointer_cast<DbIndex::RangeIndex_t>(ptr);
 				break;
 			}
 		}

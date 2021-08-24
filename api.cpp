@@ -102,7 +102,7 @@ namespace Endpoints {
 					definition["name"] = indexName;
 
 					// Create Index, set and directly build it
-					DbIndex::Iindex_t* index = DbIndex::loadIndexFromJSON(definition);
+					std::shared_ptr<DbIndex::Iindex_t> index = DbIndex::loadIndexFromJSON(definition);
 					collections[colName]->indexes[indexName] = index;
 					rebuildIndexes.insert(colName);
 				}
