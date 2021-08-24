@@ -50,10 +50,11 @@ void parseStartArguments(int argc, char* argv[])
 
 }
 
-int main(int argc, char* argv[]) {
+int main(int argc, char* argv[]) {  
     // Init
     parseStartArguments(argc, argv);
     signal(SIGINT, [](int signal) { INTERRUPT = true; }); // Control-C Event
+    signal(SIGTERM, [](int signal) { INTERRUPT = true; }); // Docker-Stop Event
 
     // Start Up
     loadDatabase(DATA_PATH);
